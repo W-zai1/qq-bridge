@@ -13,10 +13,18 @@
 | --- | --- | --- |
 | [guides/PROJECT_GUIDE.md](guides/PROJECT_GUIDE.md) | **权威项目说明书**（113 KB / 1450+ 行）：架构、内外核划分、数据流、配置全解、安全机制、调试与改进指南，含 2026-08-20 ~ 2026-09-11 的逐轮更新记录 | ✅ **唯一权威版本**（另一份同名精简版已归档到 legacy，见下） |
 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | DSH 端安装说明：`qq-chat` / `qq-chat-v2` preset 与三个 MCP server 怎么挂到目标设备的 DSH 上 | ✅ |
+| [guides/WORKBUDDY.md](guides/WORKBUDDY.md) | 用 WorkBuddy 积分代替 DeepSeek 官方账号：插件安装、provider/model 选择、三层验证、**图片输入限制**、回滚步骤 | ✅ 2026-09-30 本机实测（2026-09-30 新增） |
 | [guides/VOICE.md](guides/VOICE.md) | 语音发送全解：独立工具（`voice-tool/` 的图形界面与命令行）、桥接 CLI、AI 工具、控制台面板，以及**工具拆出后的配置解析顺序** | ✅ 2026 整理时已更新（工具移到上一级 `voice-tool/`） |
 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md) | 控制台「令牌与花费」看板：数据来源、计价口径（峰谷分时）、API、配置 | ✅ |
 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md) | 控制台离线预览（`npm run preview:console`）与离线浏览器回归（`npm run test:console-ui`）怎么用 | ✅ 2026 整理时自 `scripts/` 移入 |
 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) | **安全基线与威胁模型**：威胁主体、已实现的边界（准入/工具面/出站/控制台/落盘/网络）、已知残余风险、发布前回归清单、改动检查单 | ✅ **改动安全相关代码前必读**（2026-09-20 新增） |
+| [guides/CONFIG-PERSISTENCE.md](guides/CONFIG-PERSISTENCE.md) | **设置与状态怎么「永久记住」**：持久化清单（哪些重启后保留、哪些刻意不落盘）、配置快照的自动留档与一键还原、备份含密钥的注意点 | ✅ 2026-10-02 新增 |
+
+## ops/ —— 运维实战记录
+
+| 文档 | 一句话说明 | 状态 |
+| --- | --- | --- |
+| [ops/BOT-SILENT-TROUBLESHOOTING.md](ops/BOT-SILENT-TROUBLESHOOTING.md) | 机器人「只接收不回复」的定位路径、根因（无租约的繁忙闸门自锁）与已落地的自愈机制 | ✅ 2026-10-01 新增 |
 
 ## design/ —— 设计与规划（读设计意图用）
 
@@ -65,11 +73,14 @@
 | --- | --- |
 | 搞懂整体架构 / 全部配置项 | [guides/PROJECT_GUIDE.md](guides/PROJECT_GUIDE.md) |
 | 在新设备上把 qq-bridge 接进 DSH | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) |
+| 把模型从 DeepSeek 官方账号换成 WorkBuddy 积分（或换回来） | [guides/WORKBUDDY.md](guides/WORKBUDDY.md) |
+| 改设置改错了想退回去 / 想知道哪些设置重启后会保留 | [guides/CONFIG-PERSISTENCE.md](guides/CONFIG-PERSISTENCE.md) |
 | 发语音 / 换 QQ 账号后语音工具 401 | [guides/VOICE.md](guides/VOICE.md)（独立工具在仓库上一级 `../voice-tool/`） |
 | 看 AI 烧了多少钱 / 计价口径 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md)、[audits/TOKEN_COST_ANALYSIS.md](audits/TOKEN_COST_ANALYSIS.md) |
 | 改控制台界面并做离线回归 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md)、[audits/CONSOLE_UI_REDESIGN_REPORT.md](audits/CONSOLE_UI_REDESIGN_REPORT.md) |
 | 改代码前先知道有哪些坑 | [guides/DSH_020_ADAPTATION.md](guides/DSH_020_ADAPTATION.md)（最新，DSH 适配）、[audits/AUDIT_FIXES_2026-09-20.md](audits/AUDIT_FIXES_2026-09-20.md)、[audits/AUDIT_REPORT_2026-09-20.md](audits/AUDIT_REPORT_2026-09-20.md) |
 | 动安全相关代码 / 做发布前检查 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) |
+| 机器人在群里不说话 / 只接收不回复 | [ops/BOT-SILENT-TROUBLESHOOTING.md](ops/BOT-SILENT-TROUBLESHOOTING.md) |
 | 知道某个目录/脚本是干什么的 | [FOLDER_MAP.md](FOLDER_MAP.md) |
 | 权限边界与安全承诺 | [../RULES.md](../RULES.md) |
 | 这个项目要往哪走（QSH） | 上位目录的 `../../QSH-plan/`（总索引 `README.md`；另有工具面/技能/云部署/新仓库与官网四份专项） |

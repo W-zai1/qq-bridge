@@ -66,3 +66,15 @@ docs/guides/VOICE.md
 # 语音库（用户个人音频素材，config.json 的 socialV2.voice.dir 指向此处）
 audio/
 
+
+# === Added on upload to W-zai1/qq-bridge ===
+# Local backup snapshots (contain credentials.bak and real config.json) - never publish
+/backup/
+
+# Vendored SnowLuma runtime: program files are kept, but local config (onebot tokens),
+# runtime data and logs must NOT be published.
+/vendor/SnowLuma/config/
+/vendor/SnowLuma/data/
+/vendor/SnowLuma/logs/
+# Local machine deployment walkthrough (contains real paths / QQ numbers) - never publish
+/docs/DEPLOY-LOCAL-DESKTOP.md

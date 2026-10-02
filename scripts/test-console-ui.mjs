@@ -59,7 +59,9 @@ try {
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('dialog', dialog => dialog.accept());
   await page.goto(fixture.url);
-  await page.waitForFunction(() => document.getElementById('v2AgentPreset')?.value === 'qq-chat-v2' && document.getElementById('wlGroups')?.value.includes('123456789'));
+  // 群白名单改成「一行一个群号 + 每行开关」后，wlGroups 变成 #wlGroupRows 的
+  // 兼容隐藏输入（225 个旧 ID 的契约仍要求它在）。等真正的行渲染出来才算就绪。
+  await page.waitForFunction(() => document.getElementById('v2AgentPreset')?.value === 'qq-chat-v2' && document.querySelectorAll('#wlGroupRows .group-row').length > 0);
 
   async function navigate(view) {
     if (original) return;
@@ -107,7 +109,8 @@ try {
       assert(visiblePages.length > 0, `${view} has no visible content`);
       assert(visiblePages.every(x => x === view), `${view} exposes another page: ${visiblePages.join(', ')}`);
     }
-    const drafts = { wlGroups: '100001, 100002', roleInput: '未保存的角色', v2AgentPreset: 'draft-preset', sKeywords: '未保存关键词', slangMeaning: '未保存的含义', tsMsg: '未发送的测试消息' };
+    // 群白名单现在是按行编辑（wlGroups 已变成隐藏的兼容占位），拖稿检查改用私聊白名单输入框。
+    const drafts = { wlPrivate: '100001 100002', roleInput: '未保存的角色', v2AgentPreset: 'draft-preset', sKeywords: '未保存关键词', slangMeaning: '未保存的含义', tsMsg: '未发送的测试消息' };
     for (const [id, value] of Object.entries(drafts)) await fill(id, value);
     await navigate('overview');
     await page.waitForTimeout(3300); // Exercise the real 3-second status polling interval.
@@ -137,9 +140,22 @@ try {
     assert.deepEqual(await clickWrite('#silentOff', '/api/role-mode'), { mode: 'active' });
   });
 
-  await test('Whitelist numeric parsing and security contracts', async () => {
-    for (const [id, value] of Object.entries({ wlGroups: '123456789，100003', wlPrivate: '100001 100002', dnGroups: '800001,800002', dnPrivate: '900001', ownerQQ: '100001' })) await fill(id, value);
-    assert.deepEqual(await clickWrite('#wlSave', '/api/whitelist'), { allow: { private: [100001, 100002], groups: [123456789, 100003] }, deny: { private: [900001], groups: [800001, 800002] }, ownerQQ: '100001' });
+  await test('Whitelist per-row group toggles and payload contracts', async () => {
+    // 群白名单：清掉基线行，加入两行，其中一行关掉「允许聊天」。
+    await page.locator('#wlGroupRows .group-row .group-row-del').evaluateAll((els) => els.forEach((el) => el.click()));
+    for (const [id, allow] of [['123456789', true], ['100003', false]]) {
+      await page.click('#wlGroupAdd');
+      const row = page.locator('#wlGroupRows .group-row').last();
+      await row.locator('input[type="text"]').fill(id);
+      if (!allow) await row.locator('input[type="checkbox"]').uncheck();
+    }
+    for (const [id, value] of Object.entries({ wlPrivate: '100001 100002', dnGroups: '800001,800002', dnPrivate: '900001', ownerQQ: '100001' })) await fill(id, value);
+    assert.deepEqual(await clickWrite('#wlSave', '/api/whitelist'), {
+      allow: { private: [100001, 100002], groups: [{ id: '123456789', enabled: true }, { id: '100003', enabled: false }] },
+      deny: { private: [900001], groups: [800001, 800002] },
+      ownerQQ: '100001',
+      allowAllPrivate: false,
+    });
     await check('secInterceptNotify', false);
     assert.deepEqual(await clickWrite('#secSave', '/api/security'), { interceptNotify: false });
   });

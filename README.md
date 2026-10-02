@@ -50,7 +50,7 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──�
 ## 架构
 
 - **QQ 侧**：`@snowluma/sdk` 的 `SnowLumaWebSocketClient`（OneBot v11 WebSocket 客户端，自动重连）
-- **DSH 侧**：适配 DSH 0.1.2 起引入、**0.2.0-rc.2 上逐项复核**的协议——用本机持久化签名密钥铸造会话 Cookie 鉴权、`/api/<namespace>/<method>` 斜杠 RPC、`/api/remote.mux` + `session/follow` 事件流（`session/control` 的队列读 `value.projections[<id>].values.inbox`，另有一元 `session/projections` 主路径）；复用 `AbstractApiClient` 传输层但不再依赖旧版 zod value schema。会话模型由桥接按 `config.json` 的 `dsh.model` 逐会话 `session.selectModel` 固定（默认 `deepseek-flash` = DeepSeek-V41-Flash，多模态）
+- **DSH 侧**：适配 DSH 0.1.2 起引入、**0.2.0-rc.2 上逐项复核**的协议——用本机持久化签名密钥铸造会话 Cookie 鉴权、`/api/<namespace>/<method>` 斜杠 RPC、`/api/remote.mux` + `session/follow` 事件流（`session/control` 的队列读 `value.projections[<id>].values.inbox`，另有一元 `session/projections` 主路径）；复用 `AbstractApiClient` 传输层但不再依赖旧版 zod value schema。会话模型由桥接按 `config.json` 的 `dsh.model` 逐会话 `session.selectModel` 固定（默认 `workbuddy` / `deepseek-v4.1-flash` = **WorkBuddy 积分**；想走 DeepSeek 官方账号就填 `deepseek-account` / `deepseek-flash`，见 [docs/guides/WORKBUDDY.md](docs/guides/WORKBUDDY.md)）
 - **agent 自主收发 QQ**：DSH 的 MCP 客户端（`~/.dsh/profiles/web/cordis.patch.yml` 配置）接入三个 MCP server：
   - `snowluma`（桥接自带 `src/mcp-snowluma-safe.js`）：QQ 动作**安全子集**（查状态/查群/查消息/发消息，发送强制白名单；发送工具支持可选 `replyToMessageId` 引用回复）
   - `snowluma-host`（桥接自带 `src/mcp-host-server.js`）：**只有** `snowluma_status`（只读探活 `get_login_info`）。
@@ -67,7 +67,7 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──�
   - **令牌与花费看板**：实时显示 AI 的 token 消耗与折算金额（元），可下钻到**每个群 / 每个好友 / 每一轮对话**（轮次、步数、缓存命中/未命中输入、输出、命中率、花费、峰谷时段），并有**按时间的消耗走势图**（24 小时 / 3 天 / 7 天 / 30 天，柱子按高峰/空闲着色，一眼看出什么时候烧得凶、哪几个小时是 2 倍价）。累计总量取自 DSH 的 `tokenUsage` 投影（精确，含桥接启动前的历史），逐轮明细由 `assistant/message` 的 `usage` 折叠而来；金额按 DeepSeek 官方价目表折算并区分**高峰 / 空闲时段**（高峰单价为空闲的 2 倍，已内置中国法定节假日）。详见 [docs/guides/TOKEN_USAGE_CONSOLE.md](docs/guides/TOKEN_USAGE_CONSOLE.md)
   - **人格（角色扮演）管理**：列表点选即可载入查看/编辑提示词，支持新建、保存修改、改名（自动重命名文件）、另存为副本、删除；超过注入上限或含一代专用指令会实时提示
   - **两层提示词可分别查看与修改**：「仿真提示词」（预设内置，管行为与协议，保存后同步到 DSH，需重启生效）与「人格提示词」（`roles/*.md`，管人设与语气，保存即生效）；仿真层保存前做安全不变量校验与自动备份，可一键还原
-  - **DSH 思考强度**：默认 `max`，可选 `high` / `low`，档位从 DSH 实际公布的能力读取，保存后下一条消息生效；控制台会明示该设置同时写入 DSH 全局默认（`~/.dsh/settings.yaml`）
+  - **DSH 思考强度与模型切换**：强度默认 `max`，可选 `high` / `low`，档位从 DSH 实际公布的能力读取，保存后下一条消息生效；**顶栏右上角有「模型来源」一键切换**（DeepSeek ↔ WorkBuddy，鼠标移上去展开 API 接入口与「怎么接入更多大模型」的说明），「运行总览」页的「DSH 模型与思考强度」卡片另有**「提供方 / 模型」两个下拉**可选目录里的任意组合（两处共用同一组接口与同一份目录，不会各说各话）。切换前会按 DSH 实时目录校验，通过才写入 `config.json`，并**立即推给所有在线 QQ 会话**。启动时桥接会自己核对一遍配置的模型是否真的存在于 DSH 目录里，把结果打进启动日志（`✅ 模型连接: …`），配错则列出可用候选——不再静默跑在默认模型上；控制台同一张卡片也显示连接状态。这些设置会同时写入 DSH 全局默认（`~/.dsh/profiles/*/cordis.patch.yml` 的 `agent-default-model`），控制台有明示。详见 [docs/guides/WORKBUDDY.md](docs/guides/WORKBUDDY.md)
 - **运行模式**：
   - `chat`：白名单群 + 白名单私聊 → qq-chat 安全聊天
   - `closed-agent`：仅私聊 owner（config.json 的 ownerQQ，可在控制台设置）→ 完整工具（默认用 DSH 自己声明的默认 preset，即 `standard`；可在控制台「closed-agent preset」下拉改为任意 DSH preset），可在 QQ 上操控 DSH
@@ -103,7 +103,7 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | 字段 | 说明 |
 | --- | --- |
 | `dsh.baseUrl` | DSH Web 地址，默认 `http://127.0.0.1:3080` |
-| `dsh.provider` / `dsh.model` / `dsh.reasoningEffort` | DSH 会话使用的模型/推理强度；若你的 DSH 没有示例中的模型，改成 DSH 设置页里可用的模型即可（选择失败只打日志，不阻塞启动） |
+| `dsh.provider` / `dsh.model` / `dsh.reasoningEffort` | DSH 会话使用的模型/推理强度。默认 `workbuddy` / `deepseek-v4.1-flash`（用 WorkBuddy 积分，需先在 DSH 装 `dsh-connect-workbuddy` 插件并登录 WorkBuddy 桌面 App）；想用 DeepSeek 官方账号则填 `deepseek-account` / `deepseek-flash`。**若你的 DSH 没有该模型，改成 DSH 设置页里可用的模型即可**（选择失败只打日志、不阻塞启动，所以改完请用 `node scripts/workbuddy-probe.mjs` 确认真的切过去了）。详见 [docs/guides/WORKBUDDY.md](docs/guides/WORKBUDDY.md) |
 | `dsh.authToken` | DSH launch token（进程启动凭据）。**通常应留空**：留空时桥接用 `~/.dsh/.credentials.yaml` 里持久化的签名密钥**离线铸造**会话 Cookie，不依赖任何进程期状态（DSH 0.1.7 起启动 token 只存在于内存、日志里那条是上一个进程的陈旧值，换 Cookie 只会 401）。只有显式填了才会优先走 token 交换 |
 | `dsh.authHeader` / `dsh.authPrefix` | 保留字段，当前新版 DSH 链路使用 Cookie 交换，不再直接发送该鉴权头 |
 | `snowluma.wsUrl` | SnowLuma OneBot **WebSocket** 地址（如 `ws://127.0.0.1:3001`） |
@@ -113,14 +113,19 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 | `agentPreset` | QQ 会话使用的 DSH agent preset，默认 `qq-chat`（改性格见下文） |
 | `socialV2.agentPreset` | `reserved2` 模式使用的 DSH agent preset，默认 `qq-chat-v2` |
 | `workspaceTitle` | QQ 会话在 DSH 界面中的归组名称，默认「QQ 聊天」 |
-| `allow.private` / `allow.groups` | 白名单（QQ 号/群号数组）；留空且 `allowAllWhenEmpty: true` 时放行全部 |
-| `deny.*` | 黑名单，优先于白名单 |
+| `allow.private` / `allow.groups` | 白名单；留空且 `allowAllWhenEmpty: true` 时放行全部。**群支持每群单独开关**：`groups` 可写成 `[{ "id": "123456789", "enabled": true }]`（控制台「一行一个群号 + 每行一个『允许聊天』」就是这种结构），也兼容旧的纯群号数组（等价于全部 `enabled: true`）。被单独关掉的群是**显式拒绝**，不受 `allowAllWhenEmpty` 影响 |
+| `allowAllPrivate` | **只放开私聊**（默认 `false`）：任何能给机器人发私聊的人都放行，**群聊仍受 `allow.groups` 限制**；`deny.private` 仍然优先。控制台「白名单 / 管理员」卡片有对应切换按钮（勾选时页面即显示警告）。⚠️ **QQ 只允许给好友发私聊**：非好友能发进来，但回复会被平台拒绝（`result=16`）——要让他们收到回复就得开下一条 |
+| `autoAcceptFriendRequests` | **自动通过好友请求**（默认 `false`）。因为 QQ 只允许给好友发私聊，这是「非好友也能收到回复」的唯一出口。**只对曾主动私聊过机器人的号生效**（最多记 500 个），避免公开号被当成加好友漏斗 |
+| `friends.enabled` | **把机器人账号的好友动态并入私聊白名单**（默认 `false`）。想放开私聊时优先用它而不是 `allowAllPrivate`——只有加了机器人为好友的人才进得来；`deny.private` 仍然优先。自动排除设备条目（我的电脑/手机/Pad）与机器人自己；读取失败保留上次名单 |
+| `friends.refreshMinutes` | 好友列表刷新间隔（分钟，默认 `10`） |
+| `friends.sourceUin` | 额外读**哪个 QQ 号**的好友（留空=只读机器人自己那个号）。填了就用 SnowLuma 本地库（`data/<该号>/snowluma_identity.db`）读，**与机器人号的好友取并集**——所以只会变多、不会变少。该号需在 QQ 客户端登录过一次让 SnowLuma 抓到名单 |
+| `deny.*` | 黑名单，优先于白名单、好友放行与 `allowAllPrivate` |
 | `ackMessage` | 消息投递后的立即回复，空字符串关闭 |
 | `sendDelayMs` | QQ 连续发送间隔，防止触发频率限制 |
 | `consolePort` | 本地控制台端口，默认 `3100` |
 | `consoleToken` | 控制台访问令牌；留空时启动自动生成并保存到 `state/console-token` |
 
-> ⚠️ `allowAllWhenEmpty: true` 表示「白名单没填就全部放行」——把 agent 接入 QQ 等于把账号控制权交给了模型，建议先填白名单。
+> ⚠️ `allowAllWhenEmpty: true` 表示「白名单没填就全部放行」——把 agent 接入 QQ 等于把账号控制权交给了模型，建议先填白名单。**只想放开私聊的话，用 `allowAllPrivate`（只放私聊、群聊照旧）或 `friends.enabled`（按好友关系放行）**，不要动 `allowAllWhenEmpty`。
 
 ### DSH 端安装（必做：装 preset + 挂 MCP）
 

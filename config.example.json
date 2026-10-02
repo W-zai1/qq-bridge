@@ -1,8 +1,8 @@
 {
   "dsh": {
     "baseUrl": "http://127.0.0.1:3080",
-    "provider": "deepseek-official",
-    "model": "deepseek-flash",
+    "provider": "workbuddy",
+    "model": "deepseek-v4.1-flash",
     "reasoningEffort": "max",
     "authToken": "",
     "authHeader": "authorization",
@@ -23,15 +23,24 @@
   "sessionCwd": "",
   "agentPreset": "qq-chat",
   "workspaceTitle": "QQ 聊天",
+  "friends": {
+    "//": "打开后把「机器人账号的好友」动态并入私聊白名单：只有加了这个机器人为好友的人能私聊它（比 allowAllWhenEmpty 精确——那个连陌生人一起放）。只影响私聊；deny.private 仍然优先。设备条目（我的电脑/我的手机/我的Pad）与机器人自己会被自动排除。注意是机器人号的好友，不是机主主号的好友。",
+    "enabled": false,
+    "refreshMinutes": 10
+  },
   "allow": {
     "private": [],
-    "groups": []
+    "groups": [
+      { "id": "123456789", "enabled": true }
+    ]
   },
   "deny": {
     "private": [],
     "groups": []
   },
   "allowAllWhenEmpty": false,
+  "allowAllPrivate": false,
+  "autoAcceptFriendRequests": false,
   "ackMessage": "",
   "sendDelayMs": 300,
   "questionTimeoutMs": 300000,

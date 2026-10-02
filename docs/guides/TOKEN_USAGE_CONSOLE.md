@@ -128,6 +128,12 @@ DSH 会话日志
 - 未登记的模型按 `fallbackModel`（默认 `deepseek-flash`）估算，并在控制台标 `estimated`。
 - 改了价目表**不需要重算历史**：金额一律在读取时折算。
 
+> **用 WorkBuddy 积分时**（`dsh.provider: workbuddy`）：WorkBuddy 计的是**积分**、不分峰谷，
+> 而 DSH 只回 token 数，所以看板**显示不了积分余额**（余额看 DSH 插件卡片里的只读概览）。
+> 本机 `config.json` 因此把 `deepseek-v4.1-flash` 登记为 DeepSeek 官方同源单价、并把
+> `peakMultiplier` 设为 `1`——看板金额的口径是「这些 token 按官方价价值多少钱」，不是扣掉的积分。
+> 详见 [WORKBUDDY.md](WORKBUDDY.md)。
+
 ## 七、存储与体量
 
 - 账本文件：`state/token-usage.jsonl`，两种行（`k:"base"` 投影基线 / `k:"turn"` 逐轮采样）。

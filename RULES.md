@@ -28,7 +28,7 @@
 | 主体 | 通道 | 权限 |
 | --- | --- | --- |
 | **管理员（ownerQQ，控制台或 DSH 设置页可配置）** | QQ 群/私聊 | 正常聊天 + **管理命令由桥接硬执行**（不经过模型）：`/role <角色名>` 切人格、`/role off` 清除、`/silent` 静默、`/active` 恢复、`/reset`、`/status`；消息自动带【管理员】标记 |
-| **群友** | QQ 群 | **仅正常聊天**。控制词、`/` 管理命令被桥接拦截；静默模式下消息不投递给 agent |
+| **群友 / 好友** | QQ 群 / 私聊 | **仅正常聊天**。控制词、`/` 管理命令被桥接拦截；静默模式下消息不投递给 agent |
 | **管理员** | **桥接控制台**（`http://127.0.0.1:3100`） | **最高权限**：控制模式（控制台顶部模式按钮）、控制角色/静默（写 `state/current-role.json`）、完整 DSH 工具（含本地操作）、查看 QQ 活动日志（`state/qq-activity.log`）、直接打开「QQ 聊天」工作区会话对话 |
 | **QQ 会话 agent（chat 模式）** | — | 最低权限面（见下） |
 
@@ -39,6 +39,24 @@
 3. **只读联网搜索**：`qq-chat` / `qq-chat-v2` 预设已关闭 DSH 内置 `tool-web` 的 `search` / `fetch`，联网统一走 `src/mcp-web-search-safe.js` 提供的 `mcp__web-search-safe__web_search/web_fetch`。不暴露本地文件、命令执行、写操作。
    - ✅ `mcp__web-search-safe__web_fetch` 已做 SSRF 加固：仅 http/https、禁止 localhost/私有 IP/链路本地/CGNAT/带凭据 URL、DNS 解析结果全量校验、每跳重定向重新校验、响应体限量读取。
 4. **发送强制白名单**：所有发送类工具（`qq_send_group_message` / `qq_send_private_message` / `qq_send_message` / `qq_send_burst` / `qq_reply` / `qq_send_poke` / `qq_send_sticker` / `qq_send_voice` 等）的目标必须命中 `config.json` 的 `allow.groups` / `allow.private`，否则拒绝执行。
+   - **群白名单支持每群单独开关**（`allow.groups` 可写成 `[{ "id": "123456789", "enabled": false }]`；控制台里是「一行一个群号 + 每行一个『允许聊天』」）。被单独关掉的群是一张**显式拒绝票**，判定顺序排在 `allowAllWhenEmpty` **之前**——否则「关掉某个群」在空名单 + 全放的配置下会被重新放行，开关就成了摆设。旧写法（纯群号数组）读进来等价于全部启用，不需要迁移。
+   - **只放开私聊（`config.json` 的 `allowAllPrivate`）**：打开后**任何能给机器人发私聊的人都放行——包括没加机器人好友的陌生人**，**群聊完全不受影响**（仍看 `allow.groups`）。控制台「白名单 / 管理员」卡片有切换按钮。
+     - `deny.private` **优先于**它——拉黑一个号立即生效，不会被这个开关绕过。
+     - 2026-10-02 实测：**未加好友的号确实能发消息进来**（`state/bridge.log` 里出现过 `private:85303881` / `private:2173156852` 这类不在好友名单里的来源）。平台侧不拦，但陌生人消息进不进得来最终仍由 QQ 的策略决定——对方被风控时可能发不出。
+     - 判定顺序在 `allowed()` 里只有一处出口：`deny` → `allowAllPrivate` → 好友 → 群级开关 → 静态白名单 → `allowAllWhenEmpty`。
+     - 用 `npm run verify:private-access` 可打印「某个号最终能不能私聊、依据是哪一条」。
+     - ⚠️ **收得到 ≠ 回得了**：QQ **只允许给好友发私聊**。非好友发来的消息桥接会正常处理，但回复会被平台拒绝：
+       `send_private_msg 失败: result=16 err=发送失败，请先添加对方为好友`
+       OneBot 没有「给陌生人发临时会话」的可用接口，所以唯一出口是让对方成为好友（见下一条）。桥接会把这条平台错误翻译成可操作提示打进日志。
+   - **自动通过好友请求（`config.json` 的 `autoAcceptFriendRequests`，默认 `false`）**：解决上一条的「回不了」。打开后机器人收到好友请求时自动同意，对方随即成为好友、能正常收到回复。
+     - **只对「曾主动私聊过机器人」的号自动同意**（最多记 500 个，LRU）——无差别同意会把一个公开 QQ 号变成加好友漏斗。没联系过的号会被跳过并记一行日志。
+     - 好友关系变化后**立即刷新**好友名单，不必等下一个 10 分钟周期。
+   - **好友私聊放行（`config.json` 的 `friends.enabled`）**：打开后把好友名单动态并入私聊准入（默认每 10 分钟刷新）。比 `allowAllPrivate` 精确——只有加了这个机器人为好友的人才进得来。
+     - 名单来源取**并集**：机器人自己账号的好友（OneBot）+ `friends.sourceUin` 指定账号的好友（读 SnowLuma 本地库 `data/<uin>/snowluma_identity.db` 的 `users.is_friend`）。任一来源不可用时只告警、不缩小已有名单。
+     - 它只管**私聊**；群聊照旧看 `allow.groups`。`deny.private` **优先于**好友放行。
+     - 自动排除：QQ 的设备条目（`我的电脑`/`我的手机`/`我的Pad`，id `2113929217-2113929219`）与机器人自己——否则等于让 AI 往机主的设备会话或自己的会话里发消息。
+     - ⚠️ 放行的是**对应账号**的好友：机器人号的好友要加机器人号，机主号的好友要加机主号，两者不是一回事。
+     - 控制台「白名单 / 管理员」卡片会实时显示当前可私聊的好友数量与来源账号。
    - **语音额外收紧**：`qq_send_voice` 只能发**语音库**（`socialV2.voice.dir`，默认 `qq-bridge/audio/`）里的文件，不能发任意本地路径、URL 或 base64（防 prompt injection 拿本机文件当语音外发）；另有独立的时长/体积/频率上限（`socialV2.voice.*`），额度与文本发送分开计数。详见 [docs/guides/VOICE.md](docs/guides/VOICE.md)。
 5. **发送禁令（模型层）**：persona 明确规定只有「管理端明确指示」或「【管理员】标记的明确要求」才可使用发送工具；禁止写"我已回复/消息已发送（message_id）"类汇报。
 6. **回复审计（桥接层硬拦截）**：agent 回复文本若包含本机路径（`C:\`、`/home/` 等）或凭据特征（token/password/secret/api key 等）→ **整条拦截不发送**，并告知"被安全策略拦截"。

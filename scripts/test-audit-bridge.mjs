@@ -361,7 +361,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       ['POST', '/api/roles/rename'], ['POST', '/api/roles/delete'],
       ['GET', '/api/preset/sim-prompt'], ['POST', '/api/preset/sim-prompt'],
       ['GET', '/api/preset/sim-prompt/backups'], ['POST', '/api/preset/sim-prompt/restore'],
-      ['GET', '/api/dsh/model'], ['POST', '/api/dsh/effort'],
+      ['GET', '/api/dsh/model'], ['POST', '/api/dsh/model'], ['POST', '/api/dsh/effort'],
       ['GET', '/api/whitelist'], ['POST', '/api/whitelist'], ['POST', '/api/restart'],
       ['POST', '/api/console/token'], ['GET', '/api/role'], ['POST', '/api/role'],
     ];

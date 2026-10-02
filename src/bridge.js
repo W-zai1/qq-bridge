@@ -11,6 +11,7 @@ import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
 import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, renderPresetPromptYaml } from './preset-prompt.js';
 import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
@@ -168,6 +169,25 @@ function atomicWriteJson(file, obj) {
   }
 }
 
+// QQ 只允许给好友发私聊。识别这类平台拒绝，好把"为什么没回"讲清楚，而不是只丢一句原文。
+// 实测文案：`OneBot send_private_msg 失败: send private message rejected: result=16 err=发送失败，请先添加对方为好友`
+const NOT_FRIEND_RE = /请先添加对方为好友|不是好友|not\s*friend|result=16\b/i;
+
+/**
+ * 给私聊发送失败补一句可操作的说明。
+ *
+ * 为什么值得单独做：`allowAllPrivate` 放开后**收得到、回不了**是很容易踩的组合——
+ * 消息进来了、AI 也生成了回复，只有最后一步被平台拒掉，看起来就像"机器人不理我"。
+ */
+function decoratePrivateSendError(key, error, cfg) {
+  const text = String(error?.message ?? error ?? '');
+  if (!key.startsWith('private:') || !NOT_FRIEND_RE.test(text)) return text;
+  const hint = cfg.autoAcceptFriendRequests === true
+    ? '对方还没和机器人成为好友，而 QQ 只允许给好友发私聊。自动通过好友请求已开启——让对方在 QQ 上发一次好友申请即可。'
+    : '对方还没和机器人成为好友，而 QQ 只允许给好友发私聊。想让陌生人也能收到回复：打开 config.json 的 autoAcceptFriendRequests（自动通过好友请求）。';
+  return `${text}\n   ↳ ${hint}`;
+}
+
 // 原子写文本文件。
 function atomicWriteText(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -179,6 +199,130 @@ function atomicWriteText(file, text) {
     try { fs.unlinkSync(tmp); } catch {}
     throw error;
   }
+}
+
+// ── 配置快照（永久记住改动的兜底）────────────────────────────────────────────
+//
+// 为什么需要它：控制台每个「保存」都是 **读整份 config.json → 改自己那几个字段 → 整份写回**。
+// 每一步都原子（不会写坏文件），但这意味着**任何手工编辑过的内容，会在下一次控制台保存时
+// 被整份覆盖**，而且此前没有任何可恢复的副本。
+//
+// 所以每次写入前先把**当前盘上那一份**存成时间戳快照。快照是纯增量旁路：
+// 失败只记一行日志，绝不阻断主流程（否则"备份不了"会变成"设置也存不了"，比不备份更糟）。
+const CONFIG_BACKUP_DIR = path.join(STATE_DIR, 'config-backups');
+const CONFIG_BACKUP_KEEP = 20;
+
+/** 把即将被覆盖的文件存一份快照。返回快照路径或 null（无可备份内容/失败）。 */
+function backupFileSnapshot(file, tag) {
+  try {
+    if (!fs.existsSync(file)) return null;
+    const before = fs.readFileSync(file, 'utf8');
+    // 内容完全一样就不留快照：控制台"点保存但没改任何东西"不该刷掉有用的历史版本。
+    let last = null;
+    try {
+      const names = fs.readdirSync(CONFIG_BACKUP_DIR).filter((n) => n.endsWith('.json')).sort();
+      if (names.length) last = fs.readFileSync(path.join(CONFIG_BACKUP_DIR, names[names.length - 1]), 'utf8');
+    } catch {}
+    if (last === before) return null;
+    fs.mkdirSync(CONFIG_BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeTag = String(tag ?? 'config').replace(/[^\w.-]/g, '_').slice(0, 40);
+    const dest = path.join(CONFIG_BACKUP_DIR, `${stamp}.${safeTag}.json`);
+    fs.writeFileSync(dest, before, { encoding: 'utf8', mode: 0o600 });
+    pruneConfigBackups();
+    return dest;
+  } catch (error) {
+    log(`⚠️ 配置快照写入失败（不影响本次保存）：${error?.message ?? error}`);
+    return null;
+  }
+}
+
+/** 只保留最近 N 份快照；清理失败不抛（快照是旁路，不该影响主流程）。 */
+function pruneConfigBackups() {
+  try {
+    const names = fs.readdirSync(CONFIG_BACKUP_DIR).filter((n) => n.endsWith('.json')).sort();
+    for (const name of names.slice(0, Math.max(0, names.length - CONFIG_BACKUP_KEEP))) {
+      try { fs.rmSync(path.join(CONFIG_BACKUP_DIR, name), { force: true }); } catch {}
+    }
+  } catch {}
+}
+
+/** 列出快照（新的在前）：文件名即可用于还原，另带大小与时间便于辨认。 */
+function listConfigBackups() {
+  try {
+    return fs.readdirSync(CONFIG_BACKUP_DIR)
+      .filter((n) => n.endsWith('.json'))
+      .map((name) => {
+        const full = path.join(CONFIG_BACKUP_DIR, name);
+        const st = fs.statSync(full);
+        // 文件名形如 <ISO时间戳>.<tag>.json —— 时间戳里的 `:` 与 `.` 已被替换成 `-`
+        const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.(.+)\.json$/.exec(name);
+        return {
+          name,
+          size: st.size,
+          mtime: st.mtimeMs,
+          tag: m ? m[6] : '',
+          at: m ? `${m[1]} ${m[2]}:${m[3]}:${m[4]}Z` : ''
+        };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+  } catch {
+    return [];
+  }
+}
+
+/** 读一份快照的正文（供预览）。文件名经白名单校验，杜绝路径穿越。 */
+function readConfigBackup(name) {
+  const safe = path.basename(String(name ?? ''));
+  if (!/^[\w.-]+\.json$/.test(safe)) throw new Error('快照文件名非法');
+  const full = path.join(CONFIG_BACKUP_DIR, safe);
+  if (!fs.existsSync(full)) throw new Error(`快照不存在：${safe}`);
+  return { name: safe, text: fs.readFileSync(full, 'utf8') };
+}
+
+/**
+ * 写 config.json 的唯一入口：先留快照、再原子写。
+ *
+ * 所有控制台保存都必须走这里。分散写 `atomicWriteJson(configFile, …)` 的话，
+ * 迟早会有人新加一处而忘了备份——那种遗漏在"配置被覆盖"发生前完全看不出来。
+ * @param tag 写这份配置的原因（进快照文件名，便于日后翻找"哪次改动之前"的版本）
+ */
+function writeConfigFile(configFile, file, tag) {
+  backupFileSnapshot(configFile, tag);
+  atomicWriteJson(configFile, file);
+}
+
+/**
+ * 把 config.json 里**控制台可改的那些字段**重新装进内存 cfg。
+ *
+ * 还原快照后必须调用它，否则会出现最糟的一种状态：盘上已经是还原后的内容，
+ * 内存里还是还原前的——界面显示 A、实际按 B 干活，且直到下次重启才"自己变了"。
+ * 只覆盖控制台拥有的字段，是为了不碰那些只有 loadConfig() 才装配的东西
+ * （pricing、dsh.authTokenExplicit、friends 的派生值等）。
+ */
+function applyEditableConfigToMemory(file) {
+  const allowGroups = normalizeGroupEntries(file.allow?.groups ?? file.allow?.group ?? []);
+  applyGroupEntries(cfg, allowGroups);
+  cfg.groupEntries = allowGroups;
+  cfg.allow = { ...(cfg.allow ?? {}), private: normalizeIdList(file.allow?.private ?? file.allow?.privates ?? []) };
+  cfg.deny = {
+    private: normalizeIdList(file.deny?.private ?? file.deny?.privates ?? []),
+    groups: normalizeIdList(file.deny?.groups ?? file.deny?.group ?? [])
+  };
+  cfg.ownerQQ = normalizeOwnerQQ(file.ownerQQ);
+  cfg.allowAllPrivate = file.allowAllPrivate === true;
+  cfg.allowAllWhenEmpty = file.allowAllWhenEmpty === true;
+  cfg.consoleToken = file.consoleToken ?? '';
+  cfg.security = { interceptNotify: true, ...(file.security ?? {}) };
+  cfg.role = { maxInjectChars: ROLE_INJECT_MAX_CHARS_DEFAULT, ...(file.role ?? {}) };
+  roleInjectMaxChars = applyRoleInjectLimit(cfg.role.maxInjectChars);
+  cfg.slang = { ...(cfg.slang ?? {}), ...(file.slang ?? {}) };
+  cfg.social = { ...(cfg.social ?? {}), ...(file.social ?? {}) };
+  cfg.socialV2 = { ...(cfg.socialV2 ?? {}), ...(file.socialV2 ?? {}) };
+  if (file.dsh && typeof file.dsh === 'object') {
+    cfg.dsh = { ...(cfg.dsh ?? {}), provider: file.dsh.provider, model: file.dsh.model, reasoningEffort: file.dsh.reasoningEffort };
+  }
+  return { allowGroups };
 }
 
 // 控制台鉴权 token：未配置时自动生成并持久化到 state/console-token，避免默认无鉴权。
@@ -303,8 +447,21 @@ function roleWarnings(content, mode = 'v2') {
   if (GEN1_ROLE_LINE_RE.test(untagged)) {
     warnings.push('未标记的小节里含一代仿真专用指令（[SILENT] / 空格分句 / 自动转发…），二代下这些行会被兜底过滤——建议把它们移到带 〔一代〕 标记的小节里');
   }
-  if (/回复示例/.test(untagged) && /[\u4e00-\u9fff]\s+[\u4e00-\u9fff]/.test(untagged)) {
-    warnings.push('“回复示例”节里的中文空格会被自动改写成逗号（二代不用空格分条），建议直接写逗号，或把该节标记为 〔一代〕');
+  // 「回复示例」节里的空格是**故意**用来示范一代分条的，二代下桥接会把它们改写成逗号。
+  // 这里只提示**示例正文**里的空格（`群友：` / `你可以：` 冒号之后的部分）：
+  //   · 注释里的空格（`（摆烂，不像 DeepSeek）`）也会被改写，但那不是分条示范，不该混进提示里；
+  //   · 不区分这两者的话，只要节里出现任意中文空格就报，用户看了也不知道该改哪一行。
+  if (/回复示例/.test(untagged)) {
+    const exampleLines = untagged.split('\n')
+      .filter((line) => /^(?:群友|你(?:不要|可以)|或者|也不要)\s*[:：]/.test(line.trim()))
+      .filter((line) => /[\u4e00-\u9fff]\s+[\u4e00-\u9fff]/.test(line.split(/[:：]/).slice(1).join(':')));
+    if (exampleLines.length) {
+      const sample = exampleLines.slice(0, 3).map((l) => `「${l.trim().slice(0, 24)}」`).join('、');
+      warnings.push(`「回复示例」节有 ${exampleLines.length} 行示例正文用了中文空格分句（${sample}${exampleLines.length > 3 ? ' 等' : ''}）：一代下空格=分条，二代下桥接会把它们改写成逗号。两种模式都要用就照常写；只给二代用就改写成逗号；只给一代用就给该节加 〔一代〕 标记。`);
+    } else if (/[\u4e00-\u9fff]\s+[\u4e00-\u9fff]/.test(untagged)) {
+      // 只剩注释/标题里有空格：二代会把它们一并改写成逗号，值得提一句但不该说得像分条隐患。
+      warnings.push('「回复示例」节里（注释或标题）有中文空格，二代下会被改写成逗号；示例正文本身没有分条空格，无需处理。');
+    }
   }
   return warnings;
 }
@@ -610,6 +767,73 @@ function normalizeIdList(value) {
   return value.map((v) => String(v).trim()).filter((v) => /^\d+$/.test(v));
 }
 
+/**
+ * 群白名单条目规范化：同时接受两种写法，统一成 `{ id, enabled }`。
+ *
+ *   - 旧写法（纯数字/字符串）：`123456789`            → `{ id, enabled: true }`
+ *   - 新写法（控制台按行编辑）：`{ id, enabled: false }`
+ *
+ * 新写法是为了让每个群可以单独关掉聊天（控制台「一行一个群号 + 每行一个开关」）。
+ * 旧配置不需要迁移：读进来就是「全部 enabled」，与改动前行为完全一致。
+ */
+function normalizeGroupEntries(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of value) {
+    const obj = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : { id: raw, enabled: true };
+    const id = String(obj.id ?? '').trim();
+    if (!/^\d+$/.test(id)) continue;
+    if (seen.has(id)) continue; // 同一个群写两行时以第一行为准，避免"两行开关打架"
+    seen.add(id);
+    out.push({ id, enabled: obj.enabled !== false });
+  }
+  return out;
+}
+
+/**
+ * 群级放行表：群号 → 该行是否允许聊天。
+ *
+ * 为什么需要它（而不是只看 `cfg.allow.groups`）：控制台要显示**被关掉的行**，
+ * 而 `allowed()` 要能把「明确关掉」和「压根不在名单里」区分开——前者不该被
+ * `allowAllWhenEmpty: true` 重新放行。`cfg.allow.groups` 只保留 enabled 的群号，
+ * 供既有的白名单引用（错误提示、MCP 工具白名单）继续使用。
+ */
+const groupAllowTable = new Map();
+
+/**
+ * 主动私聊过机器人的号（最近 500 个）。
+ *
+ * 为什么单独记这一份：QQ 不允许给陌生人发私聊，所以"陌生人发来私聊"这条路的唯一出口是
+ * 让对方成为好友；而**无差别自动同意任何好友请求**会把一个公开 QQ 号变成加好友漏斗。
+ * 折中：只对**确实主动找过机器人**的号自动同意——他们有明确意图，而不是被随机添加。
+ */
+const friendRequestCandidates = new Set();
+const FRIEND_REQUEST_CANDIDATE_MAX = 500;
+
+function rememberPrivateContact(id) {
+  const s = String(id ?? '').trim();
+  if (!/^\d+$/.test(s)) return;
+  // Set 按插入序迭代：超出上限时删掉最旧的那个，天然当 LRU 用。
+  if (friendRequestCandidates.size >= FRIEND_REQUEST_CANDIDATE_MAX) {
+    const oldest = friendRequestCandidates.values().next().value;
+    friendRequestCandidates.delete(oldest);
+  }
+  friendRequestCandidates.add(s);
+}
+
+/** 把规范化后的群条目写进内存：刷新查表 + 重建 `cfg.allow.groups`（只含 enabled）。 */
+function applyGroupEntries(cfg, entries) {
+  groupAllowTable.clear();
+  const enabled = [];
+  for (const e of entries) {
+    groupAllowTable.set(e.id, e.enabled);
+    if (e.enabled) enabled.push(e.id);
+  }
+  cfg.allow = { ...(cfg.allow ?? {}), groups: enabled };
+  return enabled;
+}
+
 // ── 配置 ────────────────────────────────────────────────────────────────────
 function loadConfig() {
   const p = path.join(ROOT, 'config.json');
@@ -640,7 +864,8 @@ function loadConfig() {
     ownerQQ: normalizeOwnerQQ(file.ownerQQ),
     allow: {
       private: normalizeIdList(file.allow?.private ?? file.allow?.privates ?? []),
-      groups: normalizeIdList(file.allow?.groups ?? file.allow?.group ?? [])
+      // 群的原始条目（含 enabled）另存一份，`cfg.allow.groups` 只放启用的。
+      groups: []
     },
     deny: {
       private: normalizeIdList(file.deny?.private ?? file.deny?.privates ?? []),
@@ -648,6 +873,42 @@ function loadConfig() {
     },
     // 私聊/群聊均未配置白名单时是否放行所有（true 时启动会打警告）
     allowAllWhenEmpty: file.allowAllWhenEmpty === true,
+    // **只**放开私聊：任何能给机器人发私聊的人都放行，**不影响群聊**（群仍看 allow.groups）。
+    //
+    // 为什么单独做一个开关而不是复用 allowAllWhenEmpty：后者是"两个都放"，想在保留
+    // 群白名单的前提下放开私聊就没有办法——而"群要紧、私聊可以松"是很常见的诉求。
+    // 控制台「白名单 / 管理员」卡片上有对应的切换按钮。
+    // `deny.private` 仍然优先（拉黑一个号立即生效），否则这个开关会让黑名单失效。
+    allowAllPrivate: file.allowAllPrivate === true,
+    // 把「机器人 QQ 的好友列表」动态并入私聊白名单。
+    //
+    // 为什么要有这个开关：`allow.private` 是静态数组，而好友会变——每加一个好友就要手改
+    // 配置并重启，实际没人做得到。打开后按好友关系放行，语义比 `allowAllWhenEmpty: true`
+    // （连陌生人一起放）精确得多：**只有加了这个机器人为好友的人**才进得来。
+    //
+    // 注意它管的是「机器人账号的好友」，不是「你主号的好友」——两者是不同 QQ 号。
+    friends: {
+      enabled: file.friends?.enabled === true,
+      refreshMinutes: Math.max(1, Number(file.friends?.refreshMinutes) || 10),
+      // 读**哪个 QQ 号**的好友名单。留空 = 机器人自己那个号（OneBot 也只能读当前登录账号）。
+      //
+      // 为什么需要它：OneBot 的 `get_friend_list` 永远只回「当前登录账号」的好友，
+      // 所以想用**机主自己号**的好友做白名单，光靠 OneBot 做不到。但 SnowLuma 会把
+      // 每个账号的好友关系落盘（`data/<uin>/snowluma_identity.db` 的 users.is_friend），
+      // 于是只要那个号登录过一次、名单被抓过，就能直接读——不必给它另配一套 OneBot 端口。
+      sourceUin: String(file.friends?.sourceUin ?? '').replace(/\D/g, '')
+    },
+    // 自动通过好友请求。
+    //
+    // 为什么需要它：QQ **只允许给好友发私聊**。放开私聊准入后，陌生人能发消息进来、
+    // 桥接也会处理，但回复会被平台拒绝：
+    //   `send_private_msg 失败: result=16 err=发送失败，请先添加对方为好友`
+    // OneBot 没有"给陌生人发临时会话"的可用接口，所以唯一的解法是让对方成为好友。
+    // 打开后：机器人在**收到好友请求**时自动同意。
+    //
+    // 默认关闭，而且**只对"曾经主动私聊过机器人"的号自动同意**——见 friendRequestCandidates。
+    // 否则一个公开的 QQ 号会接受任何人的好友请求，把一个聊天机器人变成加好友漏斗。
+    autoAcceptFriendRequests: file.autoAcceptFriendRequests === true,
     ackMessage: file.ackMessage ?? '🤔 收到，正在思考…',
     sendDelayMs: file.sendDelayMs ?? 300,
     questionTimeoutMs: file.questionTimeoutMs ?? 5 * 60 * 1000,
@@ -931,6 +1192,16 @@ function loadConfig() {
   roleInjectMaxChars = applyRoleInjectLimit(cfg.role.maxInjectChars);
   if (roleInjectMaxChars !== cfg.role.maxInjectChars) {
     log(`人格注入上限已按范围校正为 ${roleInjectMaxChars} 字符（配置值 ${cfg.role.maxInjectChars}，允许 1000~20000）`);
+  }
+
+  // 群白名单：把「一行一个群号 + 每行开关」的条目装进内存查表，并重建 cfg.allow.groups
+  // （只含 enabled 的群号，供既有白名单引用继续使用）。旧格式读进来等价于全部 enabled。
+  const groupEntries = normalizeGroupEntries(file.allow?.groups ?? file.allow?.group ?? []);
+  applyGroupEntries(cfg, groupEntries);
+  cfg.groupEntries = groupEntries;
+  if (groupEntries.some((e) => !e.enabled)) {
+    const off = groupEntries.filter((e) => !e.enabled).map((e) => e.id);
+    log(`群白名单：${groupEntries.length} 个群，其中 ${off.length} 个被单独关闭（${off.join(', ')}）——这些群的消息会被明确拒绝，不受 allowAllWhenEmpty 影响`);
   }
 
   return cfg;
@@ -1239,13 +1510,41 @@ function extractMediaFromSegments(segments) {
   return media;
 }
 
+/**
+ * 机器人账号的好友 id 集合（`cfg.friends.enabled` 打开时由 `refreshFriendList()` 填充）。
+ *
+ * 为什么不直接并进 `cfg.allow.private`：那样「配置里写死的白名单」与「运行时拉来的好友」
+ * 会混成一个数组，控制台保存白名单时会互相覆盖。分开存，`allowed()` 里按需读，
+ * 权限判断仍然只有这一个出口。
+ */
+const friendIds = new Set();
+/** 机器人自己的 QQ 号：登录信息里拿到，用于把"自己"排除在好友放行之外。 */
+let botSelfId = '';
+/**
+ * 最近一次好友名单刷新的结果摘要，供控制台如实呈现「现在放行的到底是谁的好友」。
+ * 不存昵称，只存计数与来源账号。
+ */
+let friendSourceInfo = { source: '', sourceUin: '', robotFriends: 0, sourceUinFriends: null, at: 0 };
+
 function allowed(kind, id, cfg) {
   // OneBot 事件里的 id 可能是数字也可能是字符串（int64 序列化差异），统一转字符串比较。
   // 配置字段兼容单数（group/private）与复数（groups/privates）两种写法。
   const s = String(id);
   const denyList = cfg.deny[kind] ?? cfg.deny[kind + 's'] ?? [];
+  // 黑名单优先于一切，包括下面按好友关系或"放开全部私聊"放行——否则拉黑一个号会失效。
   if (denyList.map(String).includes(s)) return false;
+  // 「允许所有人私聊」：只作用于私聊，群聊不受影响。
+  if (kind === 'private' && cfg.allowAllPrivate === true) return true;
+  // 好友列表只对私聊生效（群聊没有"好友"概念）。
+  if (kind === 'private' && cfg.friends?.enabled === true && friendIds.has(s)) return true;
+  // 群级开关：控制台里被**单独关掉**的群是一张显式拒绝票，必须排在 allowAllWhenEmpty
+  // 之前——否则「关掉某个群」在空名单+全放的配置下会被重新放行，开关就成了摆设。
+  //
+  // 注意这里先查表、再回落到**活的** `cfg.allow.groups`：查表只对「明确关掉」的群返回 false，
+  // 绝不返回 true——因为运行期可能有代码直接改写 `cfg.allow.groups`（例如测试里把它清空以
+  // 验证"发送时重新核对白名单"）。查表若也负责放行，就会盖掉那次清空，等于让白名单失效。
   const allowList = cfg.allow[kind] ?? cfg.allow[kind + 's'] ?? [];
+  if (kind === 'group' && groupAllowTable.get(s) === false) return false;
   if (allowList.length > 0) return allowList.map(String).includes(s);
   return cfg.allowAllWhenEmpty;
 }
@@ -2207,6 +2506,20 @@ async function main() {
   if (!cfg.ownerQQ) {
     log('⚠️  未配置 ownerQQ：审批/管理命令/封闭 agent 模式将全部不可用。请在 config.json 或控制台「访问与安全」页填写管理员 QQ');
   }
+  if (cfg.friends?.enabled === true) {
+    // 说清楚「放行的到底是谁的好友」以及名单从哪来——这两点经常被混为一谈，
+    // 而真正的边界取决于别人加的是哪个号、以及那个号有没有被抓到名单。
+    const src = String(cfg.friends?.sourceUin ?? '').replace(/\D/g, '');
+    const mins = Math.max(1, Number(cfg.friends?.refreshMinutes) || 10);
+    log(src
+      ? `好友私聊放行：已开启（机器人号的好友 + 账号 ${src} 的好友，取并集；后者读 SnowLuma 本地库，需该号登录过一次；每 ${mins} 分钟刷新）`
+      : `好友私聊放行：已开启（仅机器人账号的好友；每 ${mins} 分钟刷新，登录后拉取）`);
+  }
+  if (cfg.autoAcceptFriendRequests === true) {
+    // QQ 不允许给陌生人发私聊，所以这是"非好友也能收到回复"的唯一出口。
+    // 明说只对联系过机器人的号生效，免得以为它会把任何好友请求都同意。
+    log('自动通过好友请求：已开启（仅对「曾主动私聊过机器人」的号生效，最多记 500 个）——因为 QQ 只允许给好友发私聊，非好友发来的消息会被平台拒绝回复');
+  }
   if (cfg.socialV2?.voice?.allowAbsolutePath === true) {
     // 该开关曾经允许 AI 发送语音库之外的任意本机音频文件（prompt injection 可用来外发文件）。
     // 现在无论开关如何，AI 通道都只接受语音库内的文件；这里提示它已经不再放宽边界。
@@ -2238,6 +2551,54 @@ async function main() {
       if (!/not.?found|unknown|unsupported|404|invalid server-response/i.test(message)) throw error;
       return api.callUnary('session.models', {});
     }
+  }
+
+  /**
+   * 启动时确认「我配的模型真的连得上」。
+   *
+   * 为什么必须有这一步：桥接的 `dsh.provider` / `dsh.model` 只是**字符串**，DSH 不会在
+   * 启动时校验它，`session.selectModel` 失败也只打一行日志。于是配错模型名（或换了个
+   * 没登录 / 没装插件的 provider）的表现是**完全静默**的——机器人照样回话，只是跑在
+   * DSH 的默认模型上，账单和人格都不是你选的那个。
+   *
+   * 这里在 DSH 就绪时按目录逐项核对，并把**实际生效**的模型打进启动日志：
+   * 通了对一行 `模型连接`；不通则把可挑选的候选一起列出来（可直接抄进 config.json）。
+   * 只探测、不改配置——切模型由控制台显式发起（见 `/api/dsh/model` 的 POST）。
+   */
+  async function verifyModelConnection() {
+    const provider = String(cfg.dsh?.provider ?? '');
+    const model = String(cfg.dsh?.model ?? '');
+    let catalog;
+    try {
+      catalog = unwrap(await withTimeout(fetchModelCatalog(), 10000, 'session/modelCatalog'), 'session.modelCatalog');
+    } catch (error) {
+      log(`⚠️ 模型连接: 读不到 DSH 模型目录（${error?.message ?? error}）——无法确认 ${provider || '(未配置)'}/${model || '(未配置)'} 是否存在；QQ 消息到达时仍会尝试选择并记日志`);
+      return { ok: false, reason: 'catalog-unavailable' };
+    }
+    const groups = catalog?.groups ?? [];
+    if (!groups.length) {
+      log('⚠️ 模型连接: DSH 模型目录里一个 provider 都没有（DSH 未就绪，或 provider 插件加载失败）');
+      return { ok: false, reason: 'empty-catalog' };
+    }
+    const group = groups.find((g) => g?.id === provider);
+    const entry = group ? (group.models ?? []).find((m) => m?.id === model) : null;
+    const effort = String(cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
+    if (group && entry) {
+      // 档位也要核：换 provider 后原来的 max 可能不存在（DSH 会拒绝非法档位）。
+      const advertised = (entry.reasoning?.efforts ?? []).map((e) => String(e?.id ?? '')).filter(Boolean);
+      const effortNote = advertised.length && !advertised.includes(effort)
+        ? `⚠️ 思考强度 ${effort} 不在该模型公布的档位（${advertised.join('/')}）里，DSH 可能拒绝或回退默认`
+        : `思考强度 ${effort}`;
+      log(`✅ 模型连接: ${provider}/${model}${entry.name ? `（${entry.name}）` : ''}｜ ${effortNote}`);
+      return { ok: true, provider, model, effort };
+    }
+    if (!group) {
+      log(`❌ 模型连接: DSH 里没有 provider「${provider}」——当前可用: ${groups.map((g) => g.id).join(', ') || '（无）'}`);
+    } else {
+      log(`❌ 模型连接: provider「${provider}」下没有模型「${model}」——该 provider 可用: ${(group.models ?? []).map((m) => m.id).join(', ') || '（无）'}`);
+    }
+    log('   QQ 消息到达时会再次尝试选择；若仍失败，实际跑的是 DSH 默认模型。请在控制台「DSH 模型与思考强度」里切换，或修正 config.json 的 dsh.provider / dsh.model。');
+    return { ok: false, reason: group ? 'model-missing' : 'provider-missing' };
   }
   const collectors = new Map(); // sessionId -> turn collector
   const sendToolSucceededSessions = new Set(); // sessionId：当前 turn 内 MCP 发送类工具至少成功一次
@@ -2721,6 +3082,13 @@ async function main() {
       if (!dshReady || dshPresetIds.length === 0) {
         try { await refreshPresetList(); } catch {}
       }
+      // DSH 刚就绪时确认一次「配的模型连得上」：DSH 自己不会在启动时校验这件事，
+      // 而配错模型名的表现是完全静默（照常回话，只是换了模型）。
+      if (!dshReady) {
+        try { await verifyModelConnection(); } catch (error) {
+          log(`⚠️ 模型连接检查异常: ${error?.message ?? error}`);
+        }
+      }
       reconcileSessionPolicies();
       if (!dshReady) {
         dshReady = true;
@@ -3058,6 +3426,19 @@ async function main() {
             ownerQQ: cfg.ownerQQ ?? null,
             allowGroups: cfg.allow?.groups ?? [],
             allowPrivate: cfg.allow?.private ?? [],
+            // 「允许所有人私聊」的实时状态，控制台「访问与安全」摘要要用。
+            allowAllPrivate: cfg.allowAllPrivate === true,
+            // 好友私聊放行的实时状态：控制台要能一眼看出「现在到底有多少好友进得来」，
+            // 而不是只能从启动日志里翻一个数字。
+            friendsEnabled: cfg.friends?.enabled === true,
+            friendsCount: friendIds.size,
+            // 实际生效的好友名单（已剔除设备条目与机器人自己）。
+            // 暴露它是为了让「到底谁能私聊」可核对，而不是只有一个数字。
+            friendsIds: [...friendIds],
+            // 名单来源：控制台据此说明「是机器人号的好友、还是加了机主号的好友」。
+            friendsSource: friendSourceInfo,
+            friendsSourceUin: String(cfg.friends?.sourceUin ?? '').replace(/\D/g, ''),
+            botSelfId: botSelfId || null,
             socialV2Paused: socialV2.paused,
             activity: readActivityTail(100)
           });
@@ -3196,7 +3577,7 @@ async function main() {
           const configFile = path.join(ROOT, 'config.json');
           const file = readConfigObject(configFile);
           file.role = { ...(file.role ?? {}), maxInjectChars: next };
-          atomicWriteJson(configFile, file);
+          writeConfigFile(configFile, file, 'role-limit');
           cfg.role = { ...(cfg.role ?? {}), maxInjectChars: next };
           roleInjectMaxChars = next;
           log(`控制台：人格注入上限已设为 ${next} 字符（下一条消息生效）`);
@@ -3606,7 +3987,7 @@ async function main() {
             if (!merged.inferenceThresholds.length) merged.inferenceThresholds = [2, 4, 8];
           }
           file.slang = merged;
-          atomicWriteJson(configFile, file);
+          writeConfigFile(configFile, file, 'slang-config');
           cfg.slang = { ...cfg.slang, ...merged };
           if (body.learnerPreset !== undefined && String(body.learnerPreset ?? '').trim() !== String(oldPreset ?? '')) {
             invalidateSlangLearnerSession();
@@ -3643,9 +4024,80 @@ async function main() {
           sendJson({ pending: list });
           return;
         }
+        // ── 配置快照：查看 / 预览 / 还原（"永久记住改动"的兜底）────────────────
+        if (req.method === 'GET' && url.pathname === '/api/config/backups') {
+          sendJson({
+            ok: true,
+            dir: CONFIG_BACKUP_DIR,
+            keep: CONFIG_BACKUP_KEEP,
+            backups: listConfigBackups()
+          });
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/config/backup') {
+          try {
+            const got = readConfigBackup(url.searchParams.get('name'));
+            // 只回正文，别回路径：页面只需要展示与确认。
+            sendJson({ ok: true, name: got.name, text: got.text, chars: got.text.length });
+          } catch (error) {
+            sendJson({ ok: false, error: error?.message ?? '读取快照失败' }, 404);
+          }
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/config/restore') {
+          const body = await readBody();
+          const configFile = path.join(ROOT, 'config.json');
+          let got;
+          try {
+            got = readConfigBackup(body.name);
+          } catch (error) {
+            sendJson({ ok: false, error: error?.message ?? '快照不可用' }, 404);
+            return;
+          }
+          let parsed;
+          try {
+            parsed = JSON.parse(got.text);
+          } catch (error) {
+            sendJson({ ok: false, error: `快照内容不是合法 JSON，已拒绝还原：${error?.message ?? error}` }, 400);
+            return;
+          }
+          // 同一条底线：顶层必须是对象。宁可拒绝，也不要把配置清成半份。
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            sendJson({ ok: false, error: '快照顶层不是对象，已拒绝还原' }, 400);
+            return;
+          }
+          // 还原前先把"当前这一份"也存下来：还原本身也是一次覆盖，
+          // 万一选错了快照，还能退回来。
+          backupFileSnapshot(configFile, 'before-restore');
+          atomicWriteJson(configFile, parsed);
+          try {
+            applyEditableConfigToMemory(parsed);
+            reconcileSessionPolicies();
+          } catch (error) {
+            log(`⚠️ 还原后重载内存配置失败（盘上已还原，建议重启桥接）：${error?.message ?? error}`);
+          }
+          log(`控制台：配置已从快照还原 —— ${got.name}`);
+          sendJson({
+            ok: true,
+            restoredFrom: got.name,
+            note: '已同时重载内存配置并落盘。模型/账号类设置若涉及 DSH，需重启桥接或 DSH 才完全生效。'
+          });
+          return;
+        }
+
         // ── 白名单可视化编辑（写 config.json + 热更新内存） ───────────────────
         if (req.method === 'GET' && url.pathname === '/api/whitelist') {
-          sendJson({ allow: cfg.allow ?? { private: [], groups: [] }, deny: cfg.deny ?? { private: [], groups: [] }, ownerQQ: cfg.ownerQQ ?? null });
+          sendJson({
+            allow: cfg.allow ?? { private: [], groups: [] },
+            // 群白名单的**全量**条目（含被单独关掉的）：控制台按行渲染时要看到关闭的行，
+            // 而 allow.groups 只有启用的那些，拿它渲染会让「关掉的群」从界面上消失。
+            allowGroupsDetail: cfg.groupEntries ?? [],
+            deny: cfg.deny ?? { private: [], groups: [] },
+            ownerQQ: cfg.ownerQQ ?? null,
+            // 「只放开私聊」的开关状态：控制台据此渲染切换按钮。
+            allowAllPrivate: cfg.allowAllPrivate === true,
+            allowAllWhenEmpty: cfg.allowAllWhenEmpty === true
+          });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/whitelist') {
@@ -3656,7 +4108,11 @@ async function main() {
           const file = readConfigObject(configFile);
           const allow = {
             private: toNum(body.allow?.private) ?? (file.allow?.private ?? []),
-            groups: toNum(body.allow?.groups) ?? (file.allow?.groups ?? [])
+            // 群支持两种提交形式：旧的群号数组（等价于全部允许）与新的
+            // `[{ id, enabled }]`（控制台按行编辑用）。两者都规范化成同一种落盘结构。
+            groups: body.allow?.groups !== undefined
+              ? normalizeGroupEntries(body.allow.groups)
+              : normalizeGroupEntries(file.allow?.groups ?? file.allow?.group ?? [])
           };
           const deny = {
             private: toNum(body.deny?.private) ?? (file.deny?.private ?? []),
@@ -3675,13 +4131,24 @@ async function main() {
           file.allow = allow;
           file.deny = deny;
           file.ownerQQ = ownerQQ;
-          atomicWriteJson(configFile, file);
-          cfg.allow = { private: allow.private, groups: allow.groups };
+          // 「允许所有人私聊」与「空名单全放」也在这条接口里改：三者都是准入策略，
+          // 分开写会让"保存白名单"这个动作的语义变得难以预期。
+          let allowAllPrivate = cfg.allowAllPrivate === true;
+          if (body.allowAllPrivate !== undefined) allowAllPrivate = body.allowAllPrivate === true;
+          file.allowAllPrivate = allowAllPrivate;
+          writeConfigFile(configFile, file, 'whitelist');
+          // 群条目走统一入口：查表 + 重建 cfg.allow.groups（只含 enabled），
+          // 避免"配置里写了一份、内存里是另一份"。
+          const groupEntries = normalizeGroupEntries(allow.groups);
+          applyGroupEntries(cfg, groupEntries);
+          cfg.groupEntries = groupEntries;
           cfg.deny = { private: deny.private, groups: deny.groups };
           cfg.ownerQQ = ownerQQ;
+          cfg.allowAllPrivate = allowAllPrivate;
           reconcileSessionPolicies();
-          log(`控制台：白名单已更新（群: ${allow.groups.join(',') || '无'}，私聊: ${allow.private.join(',') || '无'}，管理员: ${ownerQQ ?? '未设置'}）`);
-          sendJson({ ok: true, allow, deny, ownerQQ });
+          const offGroups = groupEntries.filter((e) => !e.enabled).map((e) => e.id);
+          log(`控制台：白名单已更新（群: ${cfg.allow.groups.join(',') || '无'}${offGroups.length ? `，另有关闭的群: ${offGroups.join(',')}` : ''}，私聊: ${allow.private.join(',') || '无'}，管理员: ${ownerQQ ?? '未设置'}，允许所有人私聊: ${allowAllPrivate ? '开' : '关'}）`);
+          sendJson({ ok: true, allow: { ...allow, groups: cfg.allow.groups }, allowGroupsDetail: groupEntries, deny, ownerQQ, allowAllPrivate });
           return;
         }
 
@@ -3694,14 +4161,31 @@ async function main() {
           let labels = {};
           let providerDefault = null;
           let catalogSource = 'fallback';
+          let catalog = [];
+          let resolved = null;
           try {
             if (!modelCatalogInFlight) {
               modelCatalogInFlight = withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog')
                 .finally(() => { modelCatalogInFlight = null; });
             }
-            const catalog = unwrap(await modelCatalogInFlight, 'session.modelCatalog');
-            const group = (catalog?.groups ?? []).find((g) => g?.id === provider);
+            const cat = unwrap(await modelCatalogInFlight, 'session.modelCatalog');
+            // 目录清单：控制台用它渲染「提供方 / 模型」两个下拉，实现随时切换。
+            // 只带 id/name/档位，不把 DSH 的原始目录整份透给页面。
+            catalog = (cat?.groups ?? []).map((g) => ({
+              id: String(g?.id ?? ''),
+              name: String(g?.name ?? g?.id ?? ''),
+              models: (g?.models ?? []).map((m) => ({
+                id: String(m?.id ?? ''),
+                name: String(m?.name ?? m?.id ?? ''),
+                efforts: (m?.reasoning?.efforts ?? []).map((e) => String(e?.id ?? '')).filter(Boolean),
+                defaultEffort: m?.reasoning?.defaultEffort ?? null
+              }))
+            })).filter((g) => g.id);
+            const group = (cat?.groups ?? []).find((g) => g?.id === provider);
             const entry = (group?.models ?? []).find((m) => m?.id === model);
+            // 当前配置在目录里的核对结果。找不到时控制台必须显式报警——
+            // 否则「模型名写错了」在页面上和「一切正常」长得一模一样。
+            resolved = { provider: Boolean(group), model: Boolean(entry) };
             const efforts = entry?.reasoning?.efforts ?? [];
             const advertised = efforts.map((e) => String(e?.id ?? '')).filter((id) => REASONING_EFFORT_OPTIONS.includes(id));
             if (advertised.length) {
@@ -3727,9 +4211,14 @@ async function main() {
             default: REASONING_EFFORT_DEFAULT,
             providerDefault,
             catalogSource,
+            catalog,
+            resolved,
             // selectModel 会同时写会话级与 DSH 全局默认（~/.dsh/settings.yaml 的 agent-default-model），
             // 控制台要把这点明确告诉管理员，避免「只想调 QQ 助手却改了 Web GUI 新会话默认」的意外。
             globalSideEffect: true,
+            // DSH 调度入口地址：控制台顶栏的悬停面板要显示它（"API 接入口"）。
+            // 这只是本机回环地址、不是凭据，给页面看没有额外暴露面。
+            dshBaseUrl: String(cfg.dsh?.baseUrl ?? ''),
           });
           return;
         }
@@ -3742,12 +4231,74 @@ async function main() {
           // fail-fast：配置损坏时直接 500，绝不回写（与白名单接口同语义）
           const file = readConfigObject(configFile);
           file.dsh = { ...(file.dsh ?? {}), reasoningEffort: effort };
-          atomicWriteJson(configFile, file);
+          writeConfigFile(configFile, file, 'dsh-effort');
           cfg.dsh = { ...(cfg.dsh ?? {}), reasoningEffort: effort };
           // 递增代号：已在运行的会话在下一条消息会重新 selectModel（无需重启桥接或 DSH）
           modelSelectionEpoch += 1;
           log(`控制台：DSH 思考强度已设为 ${effort}（对已有会话于下一条消息生效）`);
           sendJson({ ok: true, reasoningEffort: effort });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/dsh/model') {
+          const body = await readBody();
+          const provider = String(body.provider ?? '').trim();
+          const model = String(body.model ?? '').trim();
+          if (!provider || !model) { sendJson({ ok: false, error: 'provider 与 model 都不能为空' }, 400); return; }
+          let effort = String(cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
+          if (body.reasoningEffort !== undefined && body.reasoningEffort !== null && body.reasoningEffort !== '') {
+            try { effort = normalizeReasoningEffort(body.reasoningEffort); }
+            catch (error) { sendJson({ ok: false, error: error?.message ?? '思考强度无效' }, 400); return; }
+          }
+          // 先按 DSH 实际目录核对**再**写配置：写错了只会得到一个静默跑在默认模型上的机器人，
+          // 所以这里 fail-fast；确实要用目录外的名字，HTTP 409 里带 needConfirm 提示二次确认。
+          let groups = [];
+          try {
+            groups = unwrap(await withTimeout(fetchModelCatalog(), 10000, 'session/modelCatalog'), 'session.modelCatalog')?.groups ?? [];
+          } catch (error) {
+            sendJson({ ok: false, error: `读不到 DSH 模型目录，未做改动：${error?.message ?? error}` }, 502);
+            return;
+          }
+          const group = groups.find((g) => g?.id === provider);
+          const entry = group ? (group.models ?? []).find((m) => m?.id === model) : null;
+          if (!group || !entry) {
+            const available = !group
+              ? `没有 provider「${provider}」，当前可用: ${groups.map((g) => g.id).join(', ') || '（无）'}`
+              : `provider「${provider}」下没有模型「${model}」，可用: ${(group.models ?? []).map((m) => m.id).join(', ') || '（无）'}`;
+            sendJson({ ok: false, error: available, needConfirm: true }, 409);
+            return;
+          }
+          const configFile = path.join(ROOT, 'config.json');
+          const file = readConfigObject(configFile);
+          file.dsh = { ...(file.dsh ?? {}), provider, model, reasoningEffort: effort };
+          writeConfigFile(configFile, file, 'dsh-model');
+          cfg.dsh = { ...(cfg.dsh ?? {}), provider, model, reasoningEffort: effort };
+          // 递增代号：已在运行的 QQ 会话在下一条消息会重新 selectModel。
+          modelSelectionEpoch += 1;
+          log(`控制台：DSH 模型已切到 ${provider}/${model}（思考强度 ${effort}）`);
+          // 顺便立刻把新模型推给现有 QQ 会话，省掉「等下一条消息才生效」的等待。
+          // 失败不算切换失败：配置已落盘，下一条消息仍会重试。
+          let applied = 0;
+          const failed = [];
+          for (const [key, sessionId] of Object.entries(state.sessions ?? {})) {
+            if (!isCurrentSession(key, sessionId)) continue;
+            try {
+              await api.sessions.selectModel({ sessionId, provider, model, reasoningEffort: effort });
+              applied += 1;
+            } catch (error) {
+              failed.push(`${key}: ${error?.message ?? error}`);
+            }
+          }
+          if (failed.length) log(`控制台：有 ${failed.length} 个已有会话未能立即切换（下一条消息会重试）：${failed.join('；')}`);
+          sendJson({
+            ok: true,
+            provider,
+            model,
+            reasoningEffort: effort,
+            appliedSessions: applied,
+            failedSessions: failed.length,
+            // 同思考强度：selectModel 会连带写 DSH 全局默认，页面必须说清楚。
+            globalSideEffect: true
+          });
           return;
         }
 
@@ -3784,7 +4335,7 @@ async function main() {
           if (typeof next.interceptNotify === 'boolean') next.interceptNotify = next.interceptNotify;
           else if (next.interceptNotify !== undefined) next.interceptNotify = Boolean(next.interceptNotify);
           file.security = next;
-          atomicWriteJson(configFile, file);
+          writeConfigFile(configFile, file, 'security');
           cfg.security = { ...(cfg.security ?? {}), ...next };
           log(`控制台：安全拦截通知已更新（interceptNotify=${cfg.security.interceptNotify}）`);
           sendJson({ ok: true, security: cfg.security });
@@ -3814,7 +4365,7 @@ async function main() {
           const file = readConfigObject(configFile);
           // 手动令牌写入 config.json（用户可见、可再改）；随机令牌写入 state/console-token 并清空 config 中的手动值。
           file.consoleToken = generated ? '' : newToken;
-          atomicWriteJson(configFile, file);
+          writeConfigFile(configFile, file, 'console-token');
           cfg.consoleToken = generated ? '' : newToken;
           atomicWriteText(path.join(STATE_DIR, 'console-token'), newToken);
           consoleToken = newToken;
@@ -3917,7 +4468,7 @@ async function main() {
           }
           if (Array.isArray(body.mustReplyKeywords)) merged.mustReplyKeywords = body.mustReplyKeywords.map(String);
           file.social = merged;
-          atomicWriteJson(configFile, file);
+          writeConfigFile(configFile, file, 'social-v1-config');
           cfg.social = { ...cfg.social, ...merged };
           log('控制台：社交配置已更新');
           sendJson({ ok: true, config: cfg.social });
@@ -4152,7 +4703,7 @@ async function main() {
           if (merged.provideRecommendations !== undefined) merged.provideRecommendations = merged.provideRecommendations === true;
           if (merged.agentPreset !== undefined) merged.agentPreset = String(merged.agentPreset ?? '');
           file.socialV2 = merged;
-          atomicWriteJson(configFile, file);
+          writeConfigFile(configFile, file, 'social-v2-config');
           cfg.socialV2 = { ...(cfg.socialV2 ?? {}), ...merged };
           // 仅当“会影响默认唤醒配置”的字段变化时，才同步到仍使用默认配置的现有会话。
           // 避免只改发送/等待/工具开关时，意外重置正在等待的潜水/唤醒计划。
@@ -4307,6 +4858,10 @@ async function main() {
             key,
             time: new Date().toISOString(),
             role: { name: roleState.role ?? null, hint: currentMode === 'reserved2' ? currentRoleHintV2() : currentRoleHint() },
+            // 真实构造出的二代唤醒提示词（含注入的人格正文）。
+            // 为什么暴露它：人设到底有没有进到模型上下文里，原先只能靠"看 QQ 上的反应"猜；
+            // 有了这一份就能直接核对（也方便排查"为什么它不叫我主人"这类问题）。
+            wakePromptPreview: currentMode === 'reserved2' ? buildWakePromptV2(key, 'preview') : null,
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
               wake: cfg.socialV2?.wake ?? {},
               send: cfg.socialV2?.send ?? {},
@@ -6640,7 +7195,7 @@ async function main() {
         })
         .catch((error) => {
           lastSendFailed.set(key, true);
-          log(`QQ 发送失败 (${key}):`, error?.message ?? error);
+          log(`QQ 发送失败 (${key}):`, decoratePrivateSendError(key, error, cfg));
         })
         .then(() => sleep(cfg.sendDelayMs));
     }
@@ -6832,7 +7387,7 @@ async function main() {
           sent.push(msg);
         })
         .catch((error) => {
-          log(`QQ 发送失败 (${key}):`, error?.message ?? error);
+          log(`QQ 发送失败 (${key}):`, decoratePrivateSendError(key, error, cfg));
           // 与 sendToQQ 同样的失败记账。少了这一步，调用方 `lastSendSucceeded(key)`
           // 会把「一条都没发出去」当成「我已经说过话了」：刷新 lastActiveMessageAt /
           // lastAiReplyAt 并抑制后续接话，而群里什么都没收到 —— 静默丢回复。
@@ -6847,6 +7402,172 @@ async function main() {
     return sendChain.then(() => sent);
   }
 
+
+  // ── 好友列表 → 私聊白名单（cfg.friends.enabled）──────────────────────────
+  /**
+   * QQ 自带的三条「我的设备」伪好友（我的电脑 / 我的手机 / 我的Pad）。
+   *
+   * 它们会出现在 `get_friend_list` 里，但**不是人**——放行它们等于让 AI 往机主的设备
+   * 会话里发消息，且这些会话对 QQ 侧有特殊语义。实测 SnowLuma 返回的正是这三个固定 id。
+   */
+  const FRIEND_DEVICE_IDS = new Set(['2113929217', '2113929218', '2113929219']);
+
+  /**
+   * 从 SnowLuma 的本地库读某个 QQ 号的好友名单。
+   *
+   * 为什么需要这条路：OneBot 的 `get_friend_list` 只回**当前登录账号**的好友，所以
+   * 想用机主自己号的好友做白名单就绕不开"读库"。SnowLuma 把每个账号的名单落在
+   * `data/<uin>/snowluma_identity.db` 的 `users.is_friend`，直接读它既不用给那个号
+   * 另配一套 OneBot 端口，也不依赖它当前是否在线。
+   *
+   * 用只读方式打开：这是 SnowLuma 正在写的活跃库（有 -wal/-shm），读的时候不能带写锁。
+   * @returns { ids: string[], total: number } | null —— null 表示这条路不可用（文件没建、schema 不同、模块不可用）
+   */
+  function readFriendIdsFromSnowLumaDb(uin) {
+    const target = String(uin || '').replace(/\D/g, '');
+    if (!target) return null;
+    // 库位置：优先 SnowLuma 安装目录（config.json 的 snowluma.homeDir），再退到 HOME 下的默认位置。
+    const home = cfg.snowluma?.homeDir ? String(cfg.snowluma.homeDir) : '';
+    const candidates = [];
+    if (home) candidates.push(path.join(home, 'data', target, 'snowluma_identity.db'));
+    candidates.push(path.join(os.homedir(), 'SnowLuma', 'data', target, 'snowluma_identity.db'));
+    const dbFile = candidates.find((f) => { try { return fs.existsSync(f); } catch { return false; } });
+    if (!dbFile) return null;
+    let DatabaseSync;
+    try {
+      // ESM 里没有全局 require；node:sqlite 是内置模块，用 createRequire 取。
+      // 取不到（Node < 22.5）不是错误，只是这条读取路不可用，由调用方回落到 OneBot。
+      ({ DatabaseSync } = createRequire(import.meta.url)('node:sqlite'));
+    } catch {
+      return null;
+    }
+    let db;
+    try {
+      db = new DatabaseSync(dbFile, { readOnly: true });
+      const rows = db.prepare('SELECT uin FROM users WHERE is_friend = 1 AND uin IS NOT NULL').all();
+      const total = db.prepare('SELECT COUNT(*) AS c FROM users').get();
+      return { ids: rows.map((r) => String(r.uin)), total: Number(total?.c ?? 0), file: dbFile };
+    } catch (error) {
+      log(`⚠️ 读取 SnowLuma 好友库失败（${dbFile}）：${error?.message ?? error}`);
+      return null;
+    } finally {
+      try { db?.close(); } catch {}
+    }
+  }
+
+  /** 拉一次好友列表并更新 {@link friendIds}。任何失败都不抛，只记日志（登录前调用是常态）。 */
+  // 并发去重：启动路径与 on('open') 都会触发刷新，两者可能重叠。
+  // 不去重的话，同一时刻两次读会各自 announce 一遍（日志重复），且在拿到不同结果时
+  // 后写的覆盖先写的——白名单会出现一次无意义的抖动。
+  let friendRefreshInFlight = null;
+  function refreshFriendList(opts = {}) {
+    if (friendRefreshInFlight) return friendRefreshInFlight;
+    friendRefreshInFlight = doRefreshFriendList(opts).finally(() => { friendRefreshInFlight = null; });
+    return friendRefreshInFlight;
+  }
+
+  async function doRefreshFriendList({ announce = true } = {}) {
+    if (cfg.friends?.enabled !== true) return { ok: false, reason: 'disabled' };
+    // 两个来源取**并集**，而不是「配了 sourceUin 就只读那个号」。
+    //
+    // 为什么必须是并集：sourceUin 指向的号可能还没登录过（库文件不存在）。若此时
+    // 只认它，白名单会在切换的那一刻变成空 —— 本来能私聊机器人的好友全部被锁在门外，
+    // 而这正是"想多放一些人进来"的反面。并集保证只会变多、不会变少。
+    const sources = [];
+    const botFriends = new Set();
+    let devices = 0;
+    let self = 0;
+
+    // ① 机器人自己账号的好友：问 OneBot（它只回当前登录账号）。
+    const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+    let onebotRaw = 0;
+    let onebotOk = false;
+    try {
+      const res = await fetch(`${httpUrl}/get_friend_list`, {
+        headers: { ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {}) },
+        signal: AbortSignal.timeout(15000)
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body?.status !== 'ok' || body?.retcode !== 0) {
+        throw new Error(`HTTP ${res.status}${body?.wording ? ` / ${body.wording}` : ''}`);
+      }
+      const list = Array.isArray(body.data) ? body.data : [];
+      onebotRaw = list.length;
+      for (const item of list) {
+        const id = String(item?.user_id ?? '').trim();
+        if (!/^\d+$/.test(id)) continue;
+        if (FRIEND_DEVICE_IDS.has(id)) { devices += 1; continue; }
+        if (botSelfId && id === botSelfId) { self += 1; continue; }
+        botFriends.add(id);
+      }
+      onebotOk = true;
+      sources.push(`机器人号 ${onebotRaw} 条`);
+    } catch (error) {
+      // 登录前/OneBot 未就绪时必然失败，属于常态，不算错误。
+      sources.push(`机器人号读取失败(${error?.message ?? error})`);
+    }
+
+    // ② 另一个号（通常就是机主自己）的好友：读 SnowLuma 本地库。
+    const sourceUin = String(cfg.friends?.sourceUin ?? '').replace(/\D/g, '');
+    let dbIds = null;
+    if (sourceUin) {
+      const fromDb = readFriendIdsFromSnowLumaDb(sourceUin);
+      if (fromDb) {
+        dbIds = [];
+        for (const id of fromDb.ids) {
+          if (FRIEND_DEVICE_IDS.has(id)) { devices += 1; continue; }
+          if (botSelfId && id === botSelfId) { self += 1; continue; }
+          dbIds.push(id);
+        }
+        sources.push(`账号 ${sourceUin} ${dbIds.length} 条`);
+      } else {
+        sources.push(`账号 ${sourceUin} 未就绪`);
+      }
+    }
+
+    // 两个来源都拿不到：保留上一次的名单（一次网络抖动不该把所有好友突然拒掉）。
+    if (!onebotOk && !dbIds) {
+      const hint = sourceUin
+        ? `——账号 ${sourceUin} 需要先在 QQ 客户端登录一次、并由 SnowLuma 抓到名单`
+        : '';
+      if (announce) log(`⚠️ 好友名单读取失败（${sources.join('；')}）${hint}。当前沿用上一次的 ${friendIds.size} 个好友。`);
+      return { ok: false, reason: 'no-source' };
+    }
+
+    const merged = new Set(botFriends);
+    for (const id of dbIds ?? []) merged.add(id);
+    friendIds.clear();
+    for (const id of merged) friendIds.add(id);
+    friendSourceInfo = {
+      source: 'union',
+      sourceUin,
+      robotFriends: botFriends.size,
+      sourceUinFriends: dbIds ? dbIds.length : null,
+      at: Date.now()
+    };
+    if (announce) {
+      log(`好友私聊放行已更新：${merged.size} 个好友（来源：${sources.join(' + ')}${devices ? `；跳过设备条目 ${devices} 个` : ''}${self ? `、自身 ${self} 个` : ''}）`);
+      // 只报数字不报昵称：日志会落进 state/ 并可能被贴出来排查，好友昵称属于隐私。
+    }
+    return {
+      ok: true,
+      count: merged.size,
+      source: 'union',
+      selfFriends: botFriends.size,
+      sourceUinFriends: dbIds ? dbIds.length : null,
+      devices,
+      self
+    };
+  }
+
+  let friendRefreshTimer = null;
+  function scheduleFriendRefresh() {
+    if (cfg.friends?.enabled !== true) return;
+    if (friendRefreshTimer) clearInterval(friendRefreshTimer);
+    const ms = Math.max(1, Number(cfg.friends?.refreshMinutes) || 10) * 60 * 1000;
+    friendRefreshTimer = setInterval(() => { void refreshFriendList({ announce: false }); }, ms);
+    friendRefreshTimer.unref?.();
+  }
 
   async function onebotSend(kind, id, message, replyToMessageId, atUserId = null) {
     const segments = [];
@@ -7285,7 +8006,7 @@ async function main() {
           sent.push(msg);
         })
         .catch((error) => {
-          log(`QQ 发送失败 (${key}):`, error?.message ?? error);
+          log(`QQ 发送失败 (${key}):`, decoratePrivateSendError(key, error, cfg));
           failed.push(error);
         });
       if (i < delays.length) {
@@ -8580,19 +9301,21 @@ async function main() {
   // 二代仿真模式专用角色提示：去掉一代的 [SILENT] / 空格分句等状态机指令，避免与工具协议冲突。
   // 为了不削减原角色卡内容，示例节不整体删除，而是把“用空格分条”的示范改写成“用逗号表示停顿”，
   // 让二代 AI 既保留原有人格示例，又不会照抄单条消息里的中文空格。
+
+  /**
+   * 这里刻意**复用一代的 `isCjkChar`（只认汉字）**，而不是"汉字 + 中文标点"的宽口径。
+   *
+   * 为什么必须同口径：这套转换的语义是"把一代里**会分条**的空格改写成二代里的停顿逗号"。
+   * 一代真正分条用的是 `splitByCjkSpaces`，它只看空格两侧是否为**汉字**。口径一旦漂移，
+   * 就会出现「一代明明没在这处分条、二代却被插了个逗号」的偏差——而且这种偏差只在特定
+   * 角色卡上复现，极难发现。写成依赖关系，以后改一边不会漏掉另一边。
+   */
   function isCjkLikeChar(ch) {
-    if (!ch) return false;
-    const code = ch.codePointAt(0);
-    return (
-      (code >= 0x4E00 && code <= 0x9FFF) ||
-      (code >= 0x3400 && code <= 0x4DBF) ||
-      (code >= 0xF900 && code <= 0xFAFF) ||
-      (code >= 0x3000 && code <= 0x303F)
-    );
+    return isCjkChar(ch);
   }
 
   // 仅用于二代角色卡“回复示例”节：把示例里用于分条的中文空格改写成中文逗号。
-  // 空格两侧只要有一侧是中文/中文标点，且另一侧不是 / \ ( ) [ ] { } " ' < > | 等符号，就转成逗号。
+  // 空格两侧只要有一侧是**汉字**，且另一侧不是 / \ ( ) [ ] { } " ' < > | 等符号，就转成逗号。
   // 这样能保留示例内容，同时避免把英文/URL/斜杠周围的空间改坏。
   function convertExampleSpacesToComma(line) {
     const chars = Array.from(String(line ?? ''));
@@ -9277,7 +10000,19 @@ async function main() {
 
   function buildWakePromptV2(key, reason) {
     const roleState = readRoleState();
-    const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
+    // 二代**注入完整角色卡**，不再只是点个名让人设靠 AI 自己去读。
+    //
+    // 为什么必须改：原先这里只有 `【当前角色】X（完整角色卡请调用 qq_get_prompt 查看）`，
+    // 于是人设能不能生效**取决于模型是否主动调那个工具**。实测后果：卡片里「回复管理员时
+    // 必须称呼其为主人」这类硬性要求经常不生效，而一代（每轮自动注入 roleHint）却正常——
+    // 同一个角色卡在两代表现不一致，用户只看到"它不叫我主人"。
+    // 现在与一代一致：注入正文；名字行保留，便于模型知道当前人格叫什么。
+    // 注意取的是 currentRoleHintV2()（已按 〔一代〕/〔二代〕 标记筛过 + 按上限截断），
+    // 所以一代专属指令不会漏进二代的工具协议里。
+    const roleTextV2 = roleHintForMode('v2');
+    const roleLine = roleState.role
+      ? `【当前角色】${roleState.role}\n\n${roleTextV2 ? roleTextV2 + '\n\n' : ''}`
+      : '';
     const st = getSocialV2State(key);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
     const memoryText = formatMemoryV2(st);
@@ -9338,7 +10073,11 @@ async function main() {
 
   function buildWakeReminderPromptV2(key) {
     const roleState = readRoleState();
-    const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
+    // 同 buildWakePromptV2：人设要注入正文，否则这条收尾提醒里的"叫主人"等硬要求同样会丢。
+    const roleTextV2 = roleHintForMode('v2');
+    const roleLine = roleState.role
+      ? `【当前角色】${roleState.role}\n\n${roleTextV2 ? roleTextV2 + '\n\n' : ''}`
+      : '';
     const st = getSocialV2State(key);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
@@ -9355,7 +10094,9 @@ async function main() {
     const st = getSocialV2State(key);
     // 防重入：如果该会话已经有一个 DSH turn 在进行中（AI 正在思考/调用工具），
     // 或已有排队/在途 prompt，则不再投递新的候选唤醒，避免“思维链进行中又塞入一个 question 唤醒”。
-    if (isConversationBusyV2(key, st)) {
+    // 用带租约的版本：卡死的信号会被强制放行，而不是让这个群永久静默。
+    const busy = isConversationBusyWithLeaseV2(key, st);
+    if (busy.busy) {
       if (!Array.isArray(st.pendingWakeReasons)) st.pendingWakeReasons = [];
       const seq = st.lastUnreadSeq || 0;
       if (!st.pendingWakeReasons.some((r) => r && r.reason === reason && r.seq === seq)) {
@@ -9363,7 +10104,7 @@ async function main() {
         // 有界队列：最多保留 20 条，防止消息洪峰下无限增长。
         if (st.pendingWakeReasons.length > 20) st.pendingWakeReasons.splice(0, st.pendingWakeReasons.length - 20);
       }
-      log(`[reserved2] 会话繁忙，暂存唤醒原因 ${key}（${reason}@seq${seq}）`);
+      log(`[reserved2] 会话繁忙，暂存唤醒原因 ${key}（${reason}@seq${seq}）；繁忙信号: ${busy.signals.join('+')}（已持续 ${Math.round((busy.heldMs ?? 0) / 1000)}s）`);
       return;
     }
     // 唤醒频率硬限制：超限则跳过本次唤醒，避免成本失控
@@ -9468,14 +10209,118 @@ async function main() {
     log(`[reserved2] 已安排回复检查唤醒 ${key}，${Math.round(delay / 1000)}s 后检查`);
   }
 
-  function isConversationBusyV2(key, st) {
-    if (st && st.pendingWakeTimer) return true;
-    if (pendingWakeKeys.has(key)) return true;
+  /**
+   * 找出「会话被视为繁忙」的具体信号。
+   *
+   * 为什么要把**哪一条**信号单独报出来：这个判定是**全局闸门**——只要有一条为真，
+   * 该会话的所有唤醒都会被改写成「暂存唤醒原因」，而暂存只有在某个 turn 正常结束时
+   * 才会被消费（见 pumpMux 的 turn/end 分支）。于是任何一条信号卡住 = 这个群**永久**
+   * 只接收不回复，且日志里只有一句「会话繁忙」，看不出卡在哪。
+   * @returns 信号名数组（空数组=不繁忙）
+   */
+  function conversationBusySignalsV2(key, st) {
+    const signals = [];
+    if (st?.pendingWakeTimer) signals.push('pendingWakeTimer');
+    if (pendingWakeKeys.has(key)) signals.push('pendingWakeKeys');
     const q = promptQueues.get(key);
-    if (q && (q.running || q.queue.length > 0)) return true;
+    if (q && (q.running || q.queue.length > 0)) signals.push('promptQueue');
     const sid = state.sessions[key];
-    if (sid && (v2TurnStartAt.has(sid) || collectors.has(sid))) return true;
-    return false;
+    if (sid && v2TurnStartAt.has(sid)) signals.push('turnRunning');
+    if (sid && collectors.has(sid)) signals.push('collector');
+    return signals;
+  }
+
+  /**
+   * 繁忙状态的**租约自愈**。
+   *
+   * 为什么需要它：`isConversationBusyV2` 的五条信号都依赖「某个回合会来收尾」
+   * （turn/end、finally、timer 回调）。一旦收尾事件丢失——DSH 重启、事件流抖动、
+   * 回合被 interrupt——对应信号就再也没人清，该会话从此永久静默。实测踩过：
+   * 2026-10-01 某个群在 11:03 之后只接收不回复，只有重启桥接才能恢复。
+   *
+   * 区分两种信号，因为它们的正常时长差一个量级：
+   *   · turn 类（turnRunning/collector）：一轮里可能等 `qq_wait_for_messages` 长轮询，
+   *     所以给足 ACTIVE_TURN_LEASE_MS；
+   *   · 待唤醒/排队类（pendingWakeTimer/pendingWakeKeys/promptQueue）：正常的批处理
+   *     窗口只有几秒，超时说明回调丢了，给 PENDING_WAKE_LEASE_MS。
+   * 只有**持续超时**才强清（连续多次都超时说明确实卡死，而不是一次慢回合）。
+   */
+  const ACTIVE_TURN_LEASE_MS = 5 * 60 * 1000;
+  const PENDING_WAKE_LEASE_MS = 2 * 60 * 1000;
+  function busyLeaseMsFor(signal) {
+    return (signal === 'turnRunning' || signal === 'collector') ? ACTIVE_TURN_LEASE_MS : PENDING_WAKE_LEASE_MS;
+  }
+
+  /**
+   * 放行一个卡死的繁忙会话：清掉超时的信号，让后续唤醒能正常投递。
+   * @param signals 当前为真的信号名（来自 conversationBusySignalsV2）
+   * @returns 是否真的清了东西
+   */
+  function forceReleaseStuckV2(key, st, signals) {
+    const sid = state.sessions[key];
+    let released = false;
+    if (signals.includes('pendingWakeTimer') && st?.pendingWakeTimer) {
+      clearTimeout(st.pendingWakeTimer);
+      st.pendingWakeTimer = null;
+      released = true;
+    }
+    if (signals.includes('pendingWakeKeys')) {
+      pendingWakeKeys.delete(key);
+      released = true;
+    }
+    if (signals.includes('promptQueue')) {
+      const q = promptQueues.get(key);
+      if (q) {
+        // 队列里排着的 items 必须显式 reject：它们的 await 方在等回执，
+        // 默默丢弃会让调用方永远挂着（而不是拿到一个可处理的失败）。
+        for (const item of q.queue.splice(0)) {
+          try { item.reject(new Error('会话繁忙状态超时，已强制放行（排队中的投递被丢弃）')); } catch {}
+        }
+        promptQueues.delete(key);
+      }
+      released = true;
+    }
+    // turn 类信号由 DSH 的事件流收尾；这里只清桥接侧的记账，让它别再堵住新唤醒。
+    if (sid && signals.includes('turnRunning')) { v2TurnStartAt.delete(sid); released = true; }
+    if (sid && signals.includes('collector')) { collectors.delete(sid); released = true; }
+    return released;
+  }
+
+  function isConversationBusyV2(key, st) {
+    return conversationBusySignalsV2(key, st).length > 0;
+  }
+
+  /**
+   * 带租约的繁忙判定：卡死的信号会被强制放行。
+   *
+   * 追踪表按「信号集合」而不是会话记录起始时刻——一次真实的新回合（信号从
+   * pending 变成 turnRunning）应该重新计时，否则正常的慢回合会被误判成卡死。
+   */
+  const busySince = new Map(); // key -> { at, signals }
+  function isConversationBusyWithLeaseV2(key, st) {
+    const signals = conversationBusySignalsV2(key, st);
+    if (!signals.length) {
+      busySince.delete(key);
+      return { busy: false, signals };
+    }
+    const sig = signals.join('+');
+    const prev = busySince.get(key);
+    const entry = (prev && prev.signals === sig) ? prev : { at: Date.now(), signals: sig };
+    busySince.set(key, entry);
+    const held = Date.now() - entry.at;
+    // 只要有一条信号超出租约，就认为这组状态卡死了（信号一变就重新计时，所以
+    // 「正常的慢回合」不会走到这里）。
+    const overLease = signals.some((s) => held > busyLeaseMsFor(s));
+    if (!overLease) return { busy: true, signals, heldMs: held, stuck: false };
+    const released = forceReleaseStuckV2(key, st, signals);
+    if (released) {
+      log(`⚠️ [reserved2] ${key} 的「会话繁忙」已持续 ${Math.round(held / 1000)}s 且无任何回合收尾（信号: ${sig}）——判定为卡死，已强制放行，让后续消息能正常唤醒。若反复出现请把这一行连同上下文反馈上来。`);
+    } else {
+      log(`⚠️ [reserved2] ${key} 的「会话繁忙」持续 ${Math.round(held / 1000)}s（信号: ${sig}），但没有可清理的状态——请检查这几条信号的来源。`);
+    }
+    busySince.delete(key);
+    // 放行这一次：让本条消息按正常路径走，而不是又进「暂存」队列。
+    return { busy: false, signals, heldMs: held, stuck: true };
   }
 
   const WAKE_PRIORITY = {
@@ -9514,7 +10359,8 @@ async function main() {
       }
       return;
     }
-    if (isConversationBusyV2(key, st)) {
+    const scheduleBusy = isConversationBusyWithLeaseV2(key, st);
+    if (scheduleBusy.busy) {
       if (!Array.isArray(st.pendingWakeReasons)) st.pendingWakeReasons = [];
       const seq = st.lastUnreadSeq || 0;
       if (!st.pendingWakeReasons.some((r) => r && r.reason === reason && r.seq === seq)) {
@@ -9522,7 +10368,7 @@ async function main() {
         // 有界队列：最多保留 20 条，防止消息洪峰下无限增长。
         if (st.pendingWakeReasons.length > 20) st.pendingWakeReasons.splice(0, st.pendingWakeReasons.length - 20);
       }
-      log(`[reserved2] 会话繁忙，暂存唤醒原因 ${key}（${reason}@seq${seq}）`);
+      log(`[reserved2] 会话繁忙，暂存唤醒原因 ${key}（${reason}@seq${seq}）；繁忙信号: ${scheduleBusy.signals.join('+')}（已持续 ${Math.round((scheduleBusy.heldMs ?? 0) / 1000)}s）`);
       return;
     }
     cancelReplyCheckV2(key); // 真实唤醒已接管，取消普通回复检查，避免 30s 后再补一刀
@@ -10622,6 +11468,8 @@ async function main() {
 
   bot.onPrivateMessage(async (event) => {
     if (event.user_id === event.self_id) return;
+    // 记下"主动找过机器人"的号：自动通过好友请求时只认这些号（见 friendRequestCandidates）。
+    rememberPrivateContact(event.user_id);
     try { await handleIncoming('private', event.user_id, event, cfg); } catch (error) { log('处理私聊消息出错:', error?.message ?? error); }
   });
   bot.onGroupMessage(async (event) => {
@@ -10630,6 +11478,30 @@ async function main() {
   });
   bot.onNotice('notify', async (event) => {
     try { await handlePokeNotice(event); } catch (error) { log('处理拍一拍事件出错:', error?.message ?? error); }
+  });
+  // 好友请求：QQ 只允许给好友发私聊，所以这是"陌生人也能被回复"的唯一出口。
+  bot.onRequest('friend', async (event) => {
+    try {
+      const from = String(event?.user_id ?? '').trim();
+      const flag = String(event?.flag ?? '');
+      const comment = String(event?.comment ?? '').slice(0, 60);
+      if (!from || !flag) return;
+      if (cfg.autoAcceptFriendRequests !== true) {
+        log(`收到好友请求（来自 ${from}${comment ? `，验证消息：${comment}` : ''}）——自动通过未开启（config.json 的 autoAcceptFriendRequests），未处理`);
+        return;
+      }
+      // 只对主动私聊过机器人的号自动同意：无差别同意会让这个公开号变成加好友漏斗。
+      if (!friendRequestCandidates.has(from)) {
+        log(`收到好友请求（来自 ${from}${comment ? `，验证消息：${comment}` : ''}）——该号没有主动私聊过机器人，按保守策略跳过（不自动同意）`);
+        return;
+      }
+      await bot.setFriendAddRequest(flag, true);
+      log(`✅ 已自动同意好友请求：${from}${comment ? `（验证消息：${comment}）` : ''}——通过后它就能收到机器人的私聊回复了`);
+      // 好友关系刚变，立刻刷新名单，不必等下一个 10 分钟周期。
+      void refreshFriendList().catch(() => {});
+    } catch (error) {
+      log(`处理好友请求出错：${error?.message ?? error}`);
+    }
   });
 
   bot.on('open', () => {
@@ -10642,11 +11514,26 @@ async function main() {
         selfNickname = String(login.nickname).toLowerCase();
         log(`机器人昵称: ${login.nickname}`);
       }
+      // 记下自己的 QQ 号：好友列表里会出现它自己，放行"自己给自己发私聊"没有意义，
+      // 而且会让「机器人给自己发消息」这条怪路径变成可达的。
+      if (login?.user_id) botSelfId = String(login.user_id);
+      // 登录信息到手后再拉好友列表（绑定了 botSelfId 才能把自己排除掉）。
+      // 每次重连都拉一次：好友变动、或上次拉取失败，都能在这里自愈。
+      if (cfg.friends?.enabled === true) {
+        void refreshFriendList().then(() => scheduleFriendRefresh()).catch(() => {});
+      }
     }).catch(() => {});
     // 连接成功后顺手确认一下 token 是否已跟当前账号对齐；不一致就写回 config.json，
     // 让 MCP 工具（另一个进程）也能拿到正确的 token。
     void syncTokenToFile();
   });
+
+  // 配了 sourceUin（读 SnowLuma 本地库）时不必等机器人登录：库是现成的文件，
+  // 立刻读一次就能让白名单在第一分钟生效，而不是要等到第一条消息之后。
+  // 走 OneBot 的路径仍由上面 on('open') 负责——它必须先从登录信息拿到 self_id 才能排除自身。
+  if (cfg.friends?.enabled === true && String(cfg.friends?.sourceUin ?? '').replace(/\D/g, '')) {
+    void refreshFriendList().then(() => scheduleFriendRefresh()).catch(() => {});
+  }
 
   /**
    * SnowLuma 恢复连接时自愈 accessToken。

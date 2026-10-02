@@ -48,10 +48,11 @@ DSH/                         ← 工作区根（不是仓库根）
 | `test-console-ui.mjs` + `console-ui-*.json` / `console-ui-fixture.mjs` / `fixtures/` | 控制台**离线浏览器回归**与基线（`npm run test:console-ui` / `npm run preview:console`），说明见 [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md) | 保留（基线只在后端契约真变时才重录） |
 | `send-*.mjs` | 面向 SnowLuma/QQ 的**真发送**小工具（`send-voice.mjs` 走桥接；`send-test-group.mjs` 发测试群） | 保留，但注意会真的发消息 |
 | `setup-*.mjs` | **安装/初始化**：把 preset、MCP 挂载写进目标设备的 DSH（`setup-dsh.mjs`，幂等） | 保留 |
-| `verify-*.mjs` | **一致性校验**：`verify-dsh-020-adaptation.mjs`（DSH 适配；`npm run verify:adaptation`）、`verify-persona-config.mjs`（人格配置） | 保留 |
+| `verify-*.mjs` | **一致性校验**：`verify-dsh-020-adaptation.mjs`（DSH 适配；`npm run verify:adaptation`）、`verify-persona-config.mjs`（人格配置）、`verify-private-access.mjs`（私聊准入：谁的私聊会被放行、依据是哪一条，含「未加好友的陌生人」这一档）、`verify-role-space-conversion.mjs`（人格卡示例节：一代空格分条 ⇔ 二代转逗号必须同为 N-1） | 保留 |
 | `probe-*.mjs` | **探针**：用来问 DSH/SnowLuma「实际支持什么」（RPC 形状、工具清单、事件流、工作区、模型、协议帧、settings 命名空间）。鉴权统一走 `probe-auth.mjs` | 保留，按需重跑 |
 | `probe-020-protocol.mjs` / `probe-020-settings.mjs` | 0.2.0 版探针：前者采样 `session/control` baseline、`session/projections`、`session/follow`、`$events`、`session/cancel` 的**原始帧结构**；后者列 settings 命名空间并**幂等写回**验证 `qq-mode` 可写。控制台「改模式不生效」时的第一手诊断 | 保留（`npm run probe:protocol` / `probe:settings`） |
 | `scan-dsh-tool-names.mjs` + `dsh-tool-names.mjs` | **工具名对账**：从已安装的 DSH 包里抽真实工具名，与 QQ 守卫的 restrict 名单双向求差（防拼错假名静默失效 / 防新版本新增能力漏隐藏）。抽取实现只有 `dsh-tool-names.mjs` 一份，`test-preset-local-tools.mjs` 与 `scan-dsh-tool-names.mjs` 共用 | 保留（每次升级 DSH 后跑一次） |
+| `workbuddy-*.mjs` | **WorkBuddy 积分链路的常备探针**：`workbuddy-probe.mjs` 读 provider/模型目录并可对目标模型发真实调用（`--call`）、`workbuddy-vision-check.mjs` 逐个测模型能否吃图片输入 | **保留**：换 provider/模型后必须重跑（桥接把模型名写错只打日志、不报错），用法见 [guides/WORKBUDDY.md](guides/WORKBUDDY.md)（2026-09-30 新增） |
 | `audit-bridge-harness.mjs` | 虚拟网关 + 沙箱化的桥接行为审计脚手架（被 `test-audit-bridge.mjs` 使用） | 保留 |
 | `harden-state-acl.mjs` | 收紧 `state/` 目录权限（Windows 上 `mode 0o600` 是空操作，必须动 ACL）。直接试 → 失败提权重试 → 仍失败则打印可复制命令；**任何路径都以 0 退出，绝不阻断启动**。被 `start.bat` 调用 | 保留（`start.bat` 依赖） |
 | `diagnose-acl.mjs` | 只读盘点：列出仓库里所有被**切断 ACL 继承**的路径，分「有意收紧（`state/`、`config.json`）」与「非预期收紧」两类，并对后者打印恢复继承的命令。背景见 [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) §2.6：DSH 沙箱的写权限只靠继承下发能力 SID，切断继承 ⇒ 沙箱里写不进去。**必须在无沙箱终端跑**（沙箱禁止以管道 stdio 拉起 icacls） | 保留（`npm run diagnose:acl`） |
@@ -72,7 +73,8 @@ DSH/                         ← 工作区根（不是仓库根）
 docs/
 ├── README.md     # 文档索引（每篇一句话 + 是否仍然有效）  ← 先看这个
 ├── FOLDER_MAP.md # 本文件
-├── guides/       # 面向使用者/运维：DSH_SETUP / DSH_020_ADAPTATION / SECURITY_BASELINE / TOKEN_USAGE_CONSOLE / CONSOLE-UI-TESTING / PRIVACY / PROJECT_GUIDE / VOICE
+├── guides/       # 面向使用者/运维：DSH_SETUP / DSH_020_ADAPTATION / SECURITY_BASELINE / TOKEN_USAGE_CONSOLE / CONSOLE-UI-TESTING / PRIVACY / PROJECT_GUIDE / VOICE / WORKBUDDY / CONFIG-PERSISTENCE
+├── ops/          # 运维实战记录（症状 → 定位路径 → 根因 → 处置）：BOT-SILENT-TROUBLESHOOTING
 ├── design/       # 设计与规划：GEN2_SIMULATION_PLAN / SOCIAL_MODE_PLAN / DSH_QQ_TOOLS_PLAN / 真人语感策略
 ├── research/     # 调研：SnowLuma功能调研 / 免打扰 / 表情包 / 本地模型选型
 ├── audits/       # 审查与优化报告（最新的全项目体检是 AUDIT_REPORT_2026-09-20）

@@ -357,6 +357,176 @@ button.planned {
   border-radius:9px;
   color:var(--icon)
 }
+/* ── 顶栏「模型来源」快捷切换 + 悬停显示的接入信息 ─────────────────────────
+   放在右上角是为了「一眼看到现在花谁的钱、一下切过去」，不必翻到运行总览卡片。
+   悬停面板（hover / focus-within 都触发）承载 API 接入信息，键盘用户也能展开。 */
+.provider-switch {
+  position:relative;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  border:1px solid var(--card-border);
+  border-radius:9px;
+  padding:5px 8px 5px 10px;
+  background:transparent;
+  cursor:default
+}
+.provider-switch-label {
+  font-size:11px;
+  color:var(--muted-soft);
+  letter-spacing:.03em
+}
+.provider-switch-current {
+  font-size:12px;
+  color:var(--text-secondary);
+  display:flex;
+  align-items:center;
+  gap:6px;
+  white-space:nowrap
+}
+.provider-switch-current b {
+  font-weight:600;
+  color:var(--text)
+}
+.provider-switch-current .provider-dot {
+  width:6px;
+  height:6px;
+  border-radius:50%;
+  background:var(--ok);
+  flex:0 0 auto
+}
+.provider-switch button {
+  font-size:11px;
+  padding:4px 9px;
+  border-radius:7px;
+  border:1px solid var(--card-border);
+  background:transparent;
+  color:var(--text-secondary);
+  cursor:pointer
+}
+.provider-switch button:hover:not(:disabled) {
+  border-color:var(--accent, #3b82f6);
+  color:var(--text)
+}
+.provider-switch button:disabled {
+  opacity:.45;
+  cursor:not-allowed
+}
+.provider-hover {
+  position:absolute;
+  top:calc(100% + 10px);
+  right:0;
+  width:430px;
+  max-width:min(430px, 92vw);
+  background:var(--card-bg, #fff);
+  border:1px solid var(--card-border);
+  border-radius:12px;
+  box-shadow:0 12px 32px rgba(0,0,0,.16);
+  padding:14px 16px;
+  z-index:60;
+  display:none;
+  text-align:left;
+  cursor:auto
+}
+.provider-switch:hover .provider-hover,
+.provider-switch:focus-within .provider-hover {
+  display:block
+}
+.provider-hover h4 {
+  margin:0 0 8px;
+  font-size:12px;
+  color:var(--text);
+  font-weight:600
+}
+.provider-hover .ph-row {
+  display:flex;
+  gap:8px;
+  font-size:11px;
+  line-height:1.65;
+  color:var(--muted);
+  align-items:baseline
+}
+.provider-hover .ph-row > span:first-child {
+  flex:0 0 96px;
+  color:var(--muted-soft)
+}
+.provider-hover code {
+  font-size:11px;
+  background:rgba(127,127,127,.14);
+  padding:1px 5px;
+  border-radius:4px;
+  word-break:break-all;
+  user-select:all
+}
+.provider-hover .ph-sep {
+  height:1px;
+  background:var(--card-border);
+  margin:10px 0
+}
+.provider-hover .ph-note {
+  font-size:11px;
+  line-height:1.7;
+  color:var(--muted)
+}
+/* ── 群白名单：一行一个群号 + 每行开关 ─────────────────────────────────────
+   关掉的行整行变淡，让"这个群不会回话"在扫一眼时就能看出来，而不是只靠勾选框。 */
+.group-rows {
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  margin-top:6px
+}
+.group-row {
+  display:flex;
+  align-items:center;
+  gap:10px
+}
+.group-row input[type="text"] {
+  flex:1 1 auto;
+  min-width:0;
+  font-variant-numeric:tabular-nums
+}
+.group-row label {
+  flex:0 0 auto;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  font-size:12px;
+  color:var(--muted);
+  cursor:pointer;
+  margin:0
+}
+.group-row input[type="checkbox"] {
+  width:auto;
+  margin:0
+}
+.group-row.is-off input[type="text"] {
+  opacity:.5
+}
+.group-row.is-off label {
+  color:var(--muted-soft)
+}
+.group-row .group-row-del {
+  flex:0 0 auto;
+  font-size:15px;
+  line-height:1;
+  width:30px;
+  height:30px;
+  padding:0;
+  border-radius:7px;
+  border:1px solid var(--card-border);
+  background:transparent;
+  color:var(--muted);
+  cursor:pointer
+}
+.group-row .group-row-del:hover {
+  color:var(--err, #dc2626);
+  border-color:var(--err, #dc2626)
+}
+.group-rows .empty-state {
+  padding:12px;
+  font-size:12px
+}
 main {
   padding:38px 40px 20px;
   max-width:1514px;
@@ -1767,7 +1937,29 @@ button:active:not(:disabled) {
   <div class="workspace">
     <header class="topbar">
       <div class="breadcrumb">工作空间<span>/</span><span id="breadcrumbPage">运行总览</span></div>
-      <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button></div>
+      <div class="topbar-actions"><span class="status-badge" id="statusText" role="status">正在连接…</span><div class="provider-switch" id="providerSwitch" tabindex="0" aria-label="模型来源切换与 API 接入信息">
+        <span class="provider-switch-label">模型来源</span>
+        <span class="provider-switch-current"><i class="provider-dot" aria-hidden="true"></i><b id="providerCurrent">读取中…</b></span>
+        <button id="providerToggle" type="button" title="在 DeepSeek 与 WorkBuddy 之间切换">⇄ 切换</button>
+        <div class="provider-hover" role="tooltip">
+          <h4>API 接入口（鼠标移到这里可复制）</h4>
+          <div class="ph-row"><span>DSH 调度入口</span><span><code id="phDshUrl">-</code></span></div>
+          <div class="ph-row"><span>当前 provider</span><span><code id="phProvider">-</code></span></div>
+          <div class="ph-row"><span>当前模型</span><span><code id="phModel">-</code></span></div>
+          <div class="ph-row"><span>可用 provider</span><span id="phProviders">-</span></div>
+          <div class="ph-sep"></div>
+          <h4>怎么接入更多大模型</h4>
+          <div class="ph-note">
+            ① <b>内置 DeepSeek 通道</b>：在 DSH <b>设置 → 模型</b> 里把 <code>llm-deepseek</code> 的
+            <code>baseURL</code> 指向任意「兼容 Messages 协议」的网关，再填 <code>apiKeyEnv</code> 与 <code>models</code>。<br>
+            ② <b>装 provider 插件</b>：像 WorkBuddy 那样装一个 bundle（<code>dsh plugin --profile desktop add &lt;包名&gt;</code>），
+            它会把新的 provider 注册进本页的目录。<br>
+            ③ 接入成功后，本页顶栏与「DSH 模型与思考强度」卡片会自动列出新 provider，<b>本文件无需改动</b>。
+          </div>
+          <div class="ph-sep"></div>
+          <div class="ph-note" id="phSideEffect"></div>
+        </div>
+      </div><button id="themeToggle" class="icon-button" type="button" aria-label="切换深色模式" aria-pressed="false" title="切换深色 / 浅色主题">☾</button><button id="refreshConsole" class="icon-button" aria-label="刷新控制台状态" title="刷新状态">↻</button></div>
     </header>
     <main id="mainContent" tabindex="-1">
       <div class="page-heading"><div><div class="eyebrow">QQ BRIDGE / CONSOLE</div><h1 id="pageTitle">让每一次连接，都自然发生。</h1><p id="pageDescription">掌握桥接状态，轻松管理你的 QQ 智能伙伴。</p></div>
@@ -2399,10 +2591,27 @@ button:active:not(:disabled) {
     </section>
 <section id="section-whitelist" data-page="access" class="card span-all">
       <h2>白名单 / 管理员</h2>
-      <label>允许的群号（逗号分隔）</label>
-      <input type="text" id="wlGroups" placeholder="123456789, 123456">
+      <label>允许的群号（一行一个，可单独关掉某个群）</label>
+      <div id="wlGroupRows" class="group-rows"></div>
+      <!-- 兼容占位：`wlGroups` 是改版前的群白名单输入框，属 scripts/console-ui-legacy-ids.json
+           里那份「225 个旧 ID 必须仍然存在」的契约（test-console-ui.mjs 断言）。
+           现在群白名单改成按行编辑，这个隐藏输入只用于承载同样的群号清单，
+           既满足契约、也让仍按旧 ID 取值的外部脚本拿到有意义的内容。 -->
+      <input type="hidden" id="wlGroups" value="">
+      <div class="row" style="margin-top:8px">
+        <button id="wlGroupAdd" class="small" type="button">+ 添加一行</button>
+        <span class="meta" id="wlGroupSummary"></span>
+      </div>
       <label>允许的私聊 QQ（逗号分隔）</label>
       <input type="text" id="wlPrivate" placeholder="123456789">
+      <div class="row" style="margin-top:8px">
+        <label style="flex:0 0 auto;cursor:pointer"><input type="checkbox" id="wlAllowAllPrivate" style="width:auto"> 允许所有人私聊</label>
+        <span class="meta">只影响私聊，群聊仍受上面群号限制</span>
+      </div>
+      <div class="meta" id="allowAllPrivateWarn" style="display:none;padding:8px 10px;border-left:3px solid var(--warn,#d08700);background:rgba(208,135,0,.08)">
+        ⚠️ <b>已允许所有人私聊</b>：任何能给机器人发私聊的人都会得到回复（群里照旧）。实际上仍受 QQ 限制——对方必须先加机器人为好友才发得出消息。黑名单里的号依然被拒。注意这会让积分消耗随私聊量增长。
+      </div>
+      <div class="meta" id="friendsState"></div>
       <label>管理员 QQ（ownerQQ，最高权限）</label>
       <input type="text" id="ownerQQ" placeholder="123456789">
       <div class="meta">管理员是唯一可执行管理命令/审批/closed-agent 的 QQ；可留空清除（清除后无管理员，fail-closed）。</div>
@@ -2425,7 +2634,17 @@ button:active:not(:disabled) {
     </section>
 <section id="section-dsh" data-page="overview" class="card span-all">
       <h2 data-note="下一条消息生效">DSH 模型与思考强度</h2>
-      <div class="meta">模型：<span id="dshModelText">-</span> ｜ 提供方：<span id="dshProviderText">-</span></div>
+      <div class="meta">当前模型：<span id="dshModelText">-</span> ｜ 提供方：<span id="dshProviderText">-</span></div>
+      <div class="meta" id="dshConnectState"></div>
+      <div class="row" style="margin-top:10px">
+        <label style="flex:0 0 auto">提供方</label>
+        <select id="dshProviderSelect" style="flex:0 1 220px"></select>
+        <label style="flex:0 0 auto">模型</label>
+        <select id="dshCatalogModelSelect" style="flex:1 1 260px"></select>
+        <button id="dshModelSave">切换模型</button>
+        <span class="meta" id="dshModelMsg"></span>
+      </div>
+      <div class="meta" id="dshModelNote"></div>
       <div class="row" style="margin-top:10px">
         <label style="flex:0 0 auto">思考强度</label>
         <select id="dshEffortSelect" style="flex:0 1 220px"></select>
@@ -2492,6 +2711,24 @@ button:active:not(:disabled) {
         <span class="meta" id="clearWsMsg"></span>
       </div>
       <div class="meta">由守护窗口启动时，重启后 5 秒自动恢复；清空工作区会归档全部 QQ 会话并清空活动日志。</div>
+    </section>
+<section id="section-config-backup" data-page="operations" class="card span-all">
+      <h2>配置快照（改错了可以退回来）</h2>
+      <div class="meta">每次保存设置前，桥接都会先把当前的 <code>config.json</code> 存一份带时间戳的快照，默认保留最近 20 份。选一份预览内容，确认无误再还原。</div>
+      <div class="row" style="margin-top:10px">
+        <button id="cfgBakRefresh" class="small">刷新列表</button>
+        <span class="meta" id="cfgBakMsg"></span>
+      </div>
+      <div id="cfgBakList" style="margin-top:10px"></div>
+      <div id="cfgBakPreviewWrap" style="display:none;margin-top:12px">
+        <div class="row">
+          <strong style="font-size:12px" id="cfgBakPreviewName"></strong>
+          <button id="cfgBakRestore" class="danger small">还原到这一份</button>
+          <button id="cfgBakClose" class="small">关闭预览</button>
+        </div>
+        <pre id="cfgBakPreview" style="max-height:320px;overflow:auto;margin-top:8px;padding:10px;background:rgba(127,127,127,.10);border-radius:6px;font-size:11px;line-height:1.5"></pre>
+      </div>
+      <div class="meta">还原会先给「当前这份」也留一份快照（标签 <code>before-restore</code>），所以选错了还能退回来。还原后内存配置会同步重载；涉及 DSH 的模型/账号类设置可能仍需重启才完全生效。</div>
     </section>
 <section id="section-notify" data-page="operations" class="card span-all">
       <h2>后台控制端引导</h2>
@@ -2850,11 +3087,84 @@ async function refreshSimPrompt() {
 }
 
 // ── DSH 模型与思考强度 ──────────────────────────────────────────────────────
+// 当前目录快照：提供方/模型两个下拉联动时要用，避免每次都重新请求。
+let dshCatalogCache = [];
+// 目录里每个模型公布的推理档位（用于切换模型后提示「max 不在该模型档位里」）。
+let dshModelEfforts = {};
+
+function renderDshCatalogModels(providerId, selectedModelId) {
+  const select = document.getElementById('dshCatalogModelSelect');
+  select.replaceChildren();
+  const group = dshCatalogCache.find((g) => g.id === providerId);
+  const models = group ? group.models : [];
+  if (!models.length) {
+    const el = document.createElement('option');
+    el.value = '';
+    el.textContent = group ? '（该提供方没有模型）' : '（目录里没有这个提供方）';
+    select.appendChild(el);
+    return;
+  }
+  // 当前配置的模型未必在目录里（写错了）。那种情况也要列出来并标红，
+  // 否则页面会「自动选中第一个」把错误配置伪装成正常状态。
+  const ids = models.map((m) => m.id);
+  if (selectedModelId && !ids.includes(selectedModelId)) {
+    const el = document.createElement('option');
+    el.value = selectedModelId;
+    el.textContent = `${selectedModelId}（⚠️ 不在目录里）`;
+    select.appendChild(el);
+  }
+  for (const m of models) {
+    const el = document.createElement('option');
+    el.value = m.id;
+    el.textContent = m.name && m.name !== m.id ? `${m.id} — ${m.name}` : m.id;
+    if (m.efforts && m.efforts.length) el.title = '公布档位：' + m.efforts.join(' / ');
+    select.appendChild(el);
+  }
+  // 当前配置的模型优先；调用方传 '' 时回落到第一个（例如刚切了提供方）。
+  select.value = selectedModelId || ids[0];
+}
+
 async function refreshDshModel() {
   try {
     const r = await api('/api/dsh/model');
     document.getElementById('dshModelText').textContent = r.model || '-';
     document.getElementById('dshProviderText').textContent = r.provider || '-';
+    dshCatalogCache = Array.isArray(r.catalog) ? r.catalog : [];
+    dshModelEfforts = {};
+    for (const g of dshCatalogCache) for (const m of g.models) dshModelEfforts[`${g.id}/${m.id}`] = m.efforts || [];
+
+    // 提供方下拉
+    const pSelect = document.getElementById('dshProviderSelect');
+    pSelect.replaceChildren();
+    const known = dshCatalogCache.map((g) => g.id);
+    if (r.provider && !known.includes(r.provider)) {
+      const el = document.createElement('option');
+      el.value = r.provider;
+      el.textContent = `${r.provider}（⚠️ 不在目录里）`;
+      pSelect.appendChild(el);
+    }
+    for (const g of dshCatalogCache) {
+      const el = document.createElement('option');
+      el.value = g.id;
+      el.textContent = g.name && g.name !== g.id ? `${g.id} — ${g.name}` : g.id;
+      pSelect.appendChild(el);
+    }
+    if (r.provider) pSelect.value = r.provider;
+    renderDshCatalogModels(pSelect.value, r.model);
+
+    // 连接状态：这一行是「启动时确认模型连接」在页面上的对应物。
+    const state = document.getElementById('dshConnectState');
+    if (r.catalogSource !== 'dsh') {
+      state.textContent = '⚠️ 读不到 DSH 模型目录，无法确认当前模型是否可用（档位为内置清单）。';
+      state.className = 'meta err';
+    } else if (r.resolved && r.resolved.provider && r.resolved.model) {
+      state.textContent = '✅ 当前模型在 DSH 目录中，连接正常。';
+      state.className = 'meta ok';
+    } else {
+      state.textContent = `❌ 当前配置${r.resolved && !r.resolved.provider ? `的提供方「${r.provider}」` : `的模型「${r.model}」`}不在 DSH 目录里——实际会跑在 DSH 默认模型上，请用下面的下拉切换。`;
+      state.className = 'meta err';
+    }
+
     const select = document.getElementById('dshEffortSelect');
     const labels = r.labels || {};
     select.replaceChildren();
@@ -2873,27 +3183,290 @@ async function refreshDshModel() {
     parts.push(r.catalogSource === 'dsh' ? '档位取自 DSH 实际公布的能力' : '未能读取 DSH 能力，档位为内置清单');
     document.getElementById('dshEffortNote').textContent = parts.join('；') + '。';
     document.getElementById('dshEffortSideEffect').textContent = r.globalSideEffect
-      ? '注意：切换会同时写入 DSH 的全局默认（~/.dsh/settings.yaml 的 agent-default-model），也就是 Web GUI 里新建会话的默认强度也会跟着变。'
+      ? '注意：切换模型或强度会同时写入 DSH 的全局默认（~/.dsh/profiles/*/cordis.patch.yml 的 agent-default-model），也就是 Web GUI 里新建会话的默认模型也会跟着变。'
       : '';
     document.getElementById('dshEffortMsg').textContent = '';
+    document.getElementById('dshModelMsg').textContent = '';
+    updateDshModelNote();
+    // 顶栏与卡片共用这一份目录缓存，渲染时不再单独取数。
+    refreshProviderSwitch(r);
   } catch (error) {
     document.getElementById('dshEffortMsg').textContent = '读取失败：' + (error?.message ?? error);
+    document.getElementById('providerCurrent').textContent = '读取失败';
   }
+}
+
+// 切模型前提示两件会让人意外的事：目录里没有该模型、以及该模型不公布当前档位。
+function updateDshModelNote() {
+  const provider = document.getElementById('dshProviderSelect').value;
+  const model = document.getElementById('dshCatalogModelSelect').value;
+  const effort = document.getElementById('dshEffortSelect').value;
+  const notes = [];
+  const inCatalog = dshCatalogCache.some((g) => g.id === provider && g.models.some((m) => m.id === model));
+  if (!inCatalog) notes.push('⚠️ 该组合不在 DSH 目录里，切换会被拒绝（除非目录确实刚变过）。');
+  const efforts = dshModelEfforts[`${provider}/${model}`] || [];
+  if (efforts.length && effort && !efforts.includes(effort)) {
+    notes.push(`⚠️ 当前思考强度 ${effort} 不在该模型公布的档位（${efforts.join(' / ')}）里，切换后请确认 DSH 接受。`);
+  }
+  document.getElementById('dshModelNote').textContent = notes.join(' ');
+}
+
+// ── 顶栏「模型来源」快捷切换 + 悬停 API 接入信息 ────────────────────────────
+// 与「DSH 模型与思考强度」卡片共用同一组接口（GET/POST /api/dsh/model），
+// 因此两处永远不会各说各话；这里只是把最常用的动作搬到顶栏。
+//
+// 「DeepSeek」与「WorkBuddy」各自对应哪个 provider 不写死：按前缀从 DSH 目录里挑，
+// 这样入口装了什么插件、provider 叫什么名字都不影响这个按钮能不能用。
+function pickProviderByFamily(family) {
+  const ids = dshCatalogCache.map((g) => g.id);
+  if (family === 'workbuddy') return ids.find((id) => id.startsWith('workbuddy')) || '';
+  return ids.find((id) => id.startsWith('deepseek')) || '';
+}
+
+// 目标 provider 里挑一个模型：优先用当前同名模型（切换后行为最接近），否则第一个。
+function pickModelForProvider(providerId, preferModel) {
+  const g = dshCatalogCache.find((x) => x.id === providerId);
+  if (!g || !g.models.length) return '';
+  if (preferModel && g.models.some((m) => m.id === preferModel)) return preferModel;
+  return g.models[0].id;
+}
+
+// 当前 provider 属于哪一家：用于决定「切换」按钮指向谁。
+function currentFamily(providerId) {
+  if (String(providerId || '').startsWith('workbuddy')) return 'workbuddy';
+  if (String(providerId || '').startsWith('deepseek')) return 'deepseek';
+  return '';
+}
+
+function renderProviderSwitch(r, dshUrl) {
+  const cur = document.getElementById('providerCurrent');
+  const family = currentFamily(r.provider);
+  const familyLabel = family === 'workbuddy' ? 'WorkBuddy 积分' : family === 'deepseek' ? 'DeepSeek' : (r.provider || '未知');
+  cur.textContent = `${familyLabel} · ${r.model}`;
+  cur.title = `${r.provider}/${r.model}`;
+
+  // 悬停面板：真实值全部来自接口，不写死。
+  document.getElementById('phDshUrl').textContent = dshUrl || '(未知)';
+  document.getElementById('phProvider').textContent = r.provider || '-';
+  document.getElementById('phModel').textContent = r.model || '-';
+  const list = dshCatalogCache.map((g) => `${g.id}（${g.models.length} 个模型）`).join('、');
+  document.getElementById('phProviders').textContent = list || '读不到目录';
+  document.getElementById('phSideEffect').textContent = r.globalSideEffect
+    ? '⚠️ 切换会同时写入 DSH 全局默认（profile 的 agent-default-model），Web GUI 新会话的默认模型也会跟着变——这是 DSH 的 session.selectModel 语义。'
+    : '';
+
+  // 切换按钮：目标不存在（没装对应插件）就禁用，而不是点了报错。
+  const target = family === 'workbuddy' ? pickProviderByFamily('deepseek') : pickProviderByFamily('workbuddy');
+  const btn = document.getElementById('providerToggle');
+  const targetLabel = currentFamily(target) === 'workbuddy' ? 'WorkBuddy 积分' : 'DeepSeek';
+  btn.disabled = !target;
+  btn.textContent = target ? `⇄ 切到 ${targetLabel}` : '⇄ 无可切换来源';
+  btn.dataset.target = target || '';
+}
+
+// 顶栏直接从共享缓存渲染（不再单独请求）：refreshDshModel() 是唯一的取数入口，
+// 两处共用 r.catalog / dshCatalogCache —— 否则两个请求可能拿到不同代次的目录，界面自相矛盾。
+function refreshProviderSwitch(r) {
+  if (!r) return;
+  renderProviderSwitch(r, r.dshBaseUrl);
+  if (providerSwitchMsg) {
+    const el = document.getElementById('phSideEffect');
+    el.textContent = `✅ ${providerSwitchMsg}。` + (el.textContent || '');
+    providerSwitchMsg = '';
+  }
+}
+
+async function toggleProvider() {
+  const btn = document.getElementById('providerToggle');
+  const target = btn.dataset.target;
+  if (!target) return;
+  const r = await api('/api/dsh/model');
+  const model = pickModelForProvider(target, r.model);
+  if (!model) { alert(`provider ${target} 下面没有可用模型，无法切换`); return; }
+  const label = currentFamily(target) === 'workbuddy' ? 'WorkBuddy 积分' : 'DeepSeek';
+  if (!confirm(`切换机器人使用的模型来源？\n\n${r.provider}/${r.model}\n  →  ${target}/${model}\n\n（${label}；会立即应用到所有在线 QQ 会话，并同步 DSH 全局默认）`)) return;
+  btn.disabled = true;
+  const res = await api('/api/dsh/model', 'POST', { provider: target, model, reasoningEffort: r.reasoningEffort });
+  btn.disabled = false;
+  if (res.ok) {
+    providerSwitchMsg = `已切到 ${res.provider}/${res.model}（${res.appliedSessions ?? 0} 个在线会话）`;
+    refreshDshModel();
+  } else {
+    alert('切换失败：' + (res.error || '未知原因'));
+    refreshProviderSwitch();
+  }
+}
+
+// ── 群白名单：一行一个群号，每行一个「允许聊天」开关 ─────────────────────────
+// 数据以 { id, enabled } 提交；后端同时兼容旧的纯群号数组。
+function addGroupRow(id = '', enabled = true) {
+  const rows = document.getElementById('wlGroupRows');
+  const row = document.createElement('div');
+  row.className = 'group-row' + (enabled ? '' : ' is-off');
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.inputMode = 'numeric';
+  input.placeholder = '群号，例如 123456789';
+  input.value = id;
+  input.addEventListener('input', updateGroupSummary);
+
+  const label = document.createElement('label');
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = enabled;
+  box.addEventListener('change', () => {
+    row.classList.toggle('is-off', !box.checked);
+    updateGroupSummary();
+  });
+  label.append(box, document.createTextNode('允许聊天'));
+
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'group-row-del';
+  del.title = '删除这一行';
+  del.textContent = '×';
+  del.addEventListener('click', () => { row.remove(); updateGroupSummary(); });
+
+  row.append(input, label, del);
+  rows.appendChild(row);
+  updateGroupSummary();
+  return row;
+}
+
+/** 读出当前编辑状态：跳过空行与非数字行，同群号去重（以第一行为准）。 */
+function readGroupRows() {
+  const out = [];
+  const seen = new Set();
+  for (const row of document.querySelectorAll('#wlGroupRows .group-row')) {
+    const id = row.querySelector('input[type="text"]').value.trim();
+    if (!/^\d+$/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, enabled: row.querySelector('input[type="checkbox"]').checked });
+  }
+  return out;
+}
+
+function updateGroupSummary() {
+  const rows = readGroupRows();
+  const off = rows.filter((r) => !r.enabled).length;
+  // 兼容占位同步：老脚本按 wlGroups 读到的仍是「启用的群号」（与改动前语义一致）。
+  const compat = document.getElementById('wlGroups');
+  if (compat) compat.value = rows.filter((r) => r.enabled).map((r) => r.id).join(', ');
+  const el = document.getElementById('wlGroupSummary');
+  if (!rows.length) {
+    el.textContent = '当前没有任何群号——群聊将全部不响应（fail-closed）。';
+    return;
+  }
+  el.textContent = `${rows.length} 个群，其中 ${rows.length - off} 个允许聊天、${off} 个已关闭` +
+    (off ? '（关闭的群消息被明确拒绝，不受「空名单全放」影响）' : '') + '。';
+}
+
+function renderGroupRows(entries) {
+  const rows = document.getElementById('wlGroupRows');
+  rows.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state meta';
+    empty.textContent = '还没有群号。点下面的「+ 添加一行」逐个加入；不添加则群聊不响应任何消息。';
+    rows.appendChild(empty);
+  } else {
+    for (const e of entries) addGroupRow(e.id, e.enabled !== false);
+  }
+  updateGroupSummary();
 }
 
 async function refreshWhitelist() {
   try {
     const w = await api('/api/whitelist');
-    document.getElementById('wlGroups').value = (w.allow.groups || []).join(', ');
+    // 群白名单用**全量**条目渲染（含被关掉的行）；allow.groups 只有启用的那些。
+    const detail = Array.isArray(w.allowGroupsDetail) && w.allowGroupsDetail.length
+      ? w.allowGroupsDetail
+      : (w.allow.groups || []).map((id) => ({ id: String(id), enabled: true }));
+    renderGroupRows(detail);
     document.getElementById('wlPrivate').value = (w.allow.private || []).join(', ');
     document.getElementById('ownerQQ').value = w.ownerQQ != null ? String(w.ownerQQ) : '';
     document.getElementById('dnGroups').value = (w.deny.groups || []).join(', ');
     document.getElementById('dnPrivate').value = (w.deny.private || []).join(', ');
+    // 「允许所有人私聊」开关 + 开启时的显式警告（状态可见，不靠记忆）。
+    const allPriv = document.getElementById('wlAllowAllPrivate');
+    allPriv.checked = w.allowAllPrivate === true;
+    document.getElementById('allowAllPrivateWarn').style.display = allPriv.checked ? '' : 'none';
+  } catch {}
+  // 好友私聊放行的状态单独从 /api/status 取（它是运行时拉来的名单，不属于白名单配置）。
+  try {
+    const s = await api('/api/status');
+    const el = document.getElementById('friendsState');
+    if (!s.friendsEnabled) {
+      el.textContent = '好友私聊放行：未开启（config.json 的 friends.enabled）。开启后会把好友名单并入上面这条私聊白名单。';
+      el.className = 'meta';
+    } else {
+      const src = s.friendsSource || {};
+      const parts = [`机器人号 ${s.botSelfId || '未知'} 的好友 ${src.robotFriends ?? '?'} 个`];
+      if (s.friendsSourceUin) {
+        const n = src.sourceUinFriends;
+        parts.push(n == null
+          ? `账号 ${s.friendsSourceUin} 的好友：未就绪（该号需在 QQ 客户端登录过一次，SnowLuma 抓到名单后自动生效）`
+          : `账号 ${s.friendsSourceUin} 的好友 ${n} 个`);
+      }
+      el.textContent = `好友私聊放行：已开启，当前 ${s.friendsCount ?? 0} 个好友可私聊机器人（来源取并集：${parts.join('；')}）。设备条目与机器人自己已排除；黑名单仍然优先。名单每 10 分钟自动刷新。`;
+      el.className = 'meta ok';
+    }
   } catch {}
 }
 
-async function refreshSessions() {
+// ── 配置快照：列出 / 预览 / 还原 ─────────────────────────────────────────────
+let cfgBakSelected = null;
+
+async function refreshConfigBackups() {
+  const listEl = document.getElementById('cfgBakList');
+  const msg = document.getElementById('cfgBakMsg');
   try {
+    const r = await api('/api/config/backups');
+    const items = r.backups || [];
+    if (!items.length) {
+      // 还没有快照是正常状态（一次设置都还没保存过），不是错误。
+      listEl.innerHTML = '<div class="empty-state"><strong>还没有快照</strong><p>在任意页面保存一次设置后，这里就会出现可回退的版本。</p></div>';
+      msg.textContent = '';
+      return;
+    }
+    msg.textContent = `共 ${items.length} 份（最多保留 ${r.keep} 份）`;
+    let html = '<table><tr><th>时间</th><th>来自哪次改动</th><th>大小</th><th></th></tr>';
+    for (const it of items) {
+      html += `<tr><td>${esc(it.at || new Date(it.mtime).toLocaleString('zh-CN', { hour12: false }))}</td>`
+        + `<td>${esc(it.tag || '—')}</td>`
+        + `<td>${Math.round(it.size / 1024 * 10) / 10} KB</td>`
+        + `<td><button class="small" data-cfgbak="${esc(it.name)}">预览</button></td></tr>`;
+    }
+    html += '</table>';
+    listEl.innerHTML = html;
+    // 用事件委托：列表是每次重建的，逐个绑定会随快照数量增长而泄漏监听器。
+    listEl.querySelectorAll('button[data-cfgbak]').forEach((btn) => {
+      btn.addEventListener('click', () => previewConfigBackup(btn.dataset.cfgbak));
+    });
+  } catch (error) {
+    listEl.innerHTML = '';
+    msg.textContent = '读取失败：' + (error?.message ?? error);
+  }
+}
+
+async function previewConfigBackup(name) {
+  const msg = document.getElementById('cfgBakMsg');
+  try {
+    const r = await api('/api/config/backup?name=' + encodeURIComponent(name));
+    if (!r.ok) { msg.textContent = '❌ ' + (r.error || '读取失败'); return; }
+    cfgBakSelected = r.name;
+    document.getElementById('cfgBakPreviewName').textContent = r.name;
+    document.getElementById('cfgBakPreview').textContent = r.text;
+    document.getElementById('cfgBakPreviewWrap').style.display = '';
+    msg.textContent = '';
+    document.getElementById('cfgBakPreviewWrap').scrollIntoView({ block: 'nearest' });
+  } catch (error) {
+    msg.textContent = '读取失败：' + (error?.message ?? error);
+  }
+}
+
+async function refreshSessions() {  try {
     const s = await api('/api/sessions');
     const box = document.getElementById('sessionList');
     document.getElementById('metricSessions').textContent = s.sessions.length;
@@ -3044,6 +3617,34 @@ document.getElementById('roleInjectMaxSave').addEventListener('click', async () 
   if (r.ok) refreshRoles();
 });
 
+// ── DSH 模型切换 ────────────────────────────────────────────────────────────
+document.getElementById('providerToggle').addEventListener('click', toggleProvider);
+document.getElementById('dshProviderSelect').addEventListener('change', (e) => {
+  renderDshCatalogModels(e.target.value, '');
+  updateDshModelNote();
+});
+document.getElementById('dshCatalogModelSelect').addEventListener('change', updateDshModelNote);
+document.getElementById('dshEffortSelect').addEventListener('change', updateDshModelNote);
+document.getElementById('dshModelSave').addEventListener('click', async () => {
+  const provider = document.getElementById('dshProviderSelect').value;
+  const model = document.getElementById('dshCatalogModelSelect').value;
+  const reasoningEffort = document.getElementById('dshEffortSelect').value;
+  const msg = document.getElementById('dshModelMsg');
+  if (!provider || !model) { msg.textContent = '❌ 提供方和模型都要选'; msg.className = 'meta err'; return; }
+  msg.textContent = '切换中…';
+  msg.className = 'meta';
+  const r = await api('/api/dsh/model', 'POST', { provider, model, reasoningEffort });
+  if (r.ok) {
+    msg.textContent = `✅ 已切到 ${r.provider}/${r.model}（强度 ${r.reasoningEffort}）；已立即应用到 ${r.appliedSessions ?? 0} 个在线会话${r.failedSessions ? `，${r.failedSessions} 个失败（下一条消息重试）` : ''}`;
+    msg.className = 'meta ok';
+    refreshDshModel();
+  } else {
+    msg.textContent = '❌ ' + (r.error || '切换失败');
+    msg.className = 'meta err';
+    refreshDshModel();
+  }
+});
+
 // ── DSH 思考强度 ────────────────────────────────────────────────────────────
 document.getElementById('dshEffortSave').addEventListener('click', async () => {
   const effort = document.getElementById('dshEffortSelect').value;
@@ -3059,13 +3660,38 @@ document.getElementById('silentOn').addEventListener('click', async () => { awai
 document.getElementById('silentOff').addEventListener('click', async () => { await api('/api/role-mode', 'POST', { mode: 'active' }); refresh(); });
 document.getElementById('wlSave').addEventListener('click', async () => {
   const parse = (s) => s.split(/[,，\s]+/).map(x => x.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
+  const rows = readGroupRows();
+  // 非数字/空行会被静默丢掉，但用户可能以为自己填上了——先明确问一次。
+  const typed = [...document.querySelectorAll('#wlGroupRows .group-row input[type="text"]')]
+    .map((el) => el.value.trim()).filter(Boolean);
+  const dropped = typed.filter((v) => !/^\d+$/.test(v));
+  if (dropped.length && !confirm(`这些行不是合法群号，保存时会被忽略：\n\n${dropped.join('\n')}\n\n仍要继续保存吗？`)) return;
   const r = await api('/api/whitelist', 'POST', {
-    allow: { private: parse(document.getElementById('wlPrivate').value), groups: parse(document.getElementById('wlGroups').value) },
+    allow: { private: parse(document.getElementById('wlPrivate').value), groups: rows },
     deny: { private: parse(document.getElementById('dnPrivate').value), groups: parse(document.getElementById('dnGroups').value) },
-    ownerQQ: document.getElementById('ownerQQ').value.trim()
+    ownerQQ: document.getElementById('ownerQQ').value.trim(),
+    allowAllPrivate: document.getElementById('wlAllowAllPrivate').checked
   });
-  if (r.ok) { refreshWhitelist(); refresh(); alert('白名单已保存并生效'); }
-  else alert(r.error || '保存失败');
+  if (r.ok) {
+    const off = rows.filter((x) => !x.enabled).length;
+    refreshWhitelist(); refresh();
+    alert(`白名单已保存并生效\n\n群：${rows.length} 个${off ? `（其中 ${off} 个已关闭聊天）` : ''}`);
+  } else alert(r.error || '保存失败');
+});
+document.getElementById('wlGroupAdd').addEventListener('click', () => {
+  // 默认允许（用户明确要求默认允许）；已存在的空行先复用，避免连点堆出多行空的。
+  const rows = document.querySelectorAll('#wlGroupRows .group-row');
+  const last = rows[rows.length - 1];
+  if (last && !last.querySelector('input[type="text"]').value.trim()) {
+    last.querySelector('input[type="text"]').focus();
+    return;
+  }
+  const row = addGroupRow('', true);
+  row.querySelector('input[type="text"]').focus();
+});
+// 勾选/取消立即切换警告条（保存前就能看见后果，不用等保存后才发现）。
+document.getElementById('wlAllowAllPrivate').addEventListener('change', (e) => {
+  document.getElementById('allowAllPrivateWarn').style.display = e.target.checked ? '' : 'none';
 });
 document.getElementById('tsSend').addEventListener('click', async () => {
   const r = await api('/api/test-send', 'POST', {
@@ -3080,6 +3706,30 @@ document.getElementById('restartBtn').addEventListener('click', async () => {
   if (!confirm('确定重启桥接？')) return;
   const r = await api('/api/restart', 'POST', {});
   document.getElementById('restartMsg').textContent = r.message || '正在重启…';
+});
+// ── 配置快照 ────────────────────────────────────────────────────────────────
+document.getElementById('cfgBakRefresh').addEventListener('click', refreshConfigBackups);
+document.getElementById('cfgBakClose').addEventListener('click', () => {
+  document.getElementById('cfgBakPreviewWrap').style.display = 'none';
+  cfgBakSelected = null;
+});
+document.getElementById('cfgBakRestore').addEventListener('click', async () => {
+  if (!cfgBakSelected) return;
+  // 还原会整份替换 config.json，必须让人明确知道自己在覆盖什么。
+  if (!confirm(`确定把 config.json 还原成这一份？\n\n${cfgBakSelected}\n\n当前这份会先被自动存成一份 before-restore 快照，选错了还能退回来。`)) return;
+  const msg = document.getElementById('cfgBakMsg');
+  msg.textContent = '还原中…';
+  const r = await api('/api/config/restore', 'POST', { name: cfgBakSelected });
+  if (r.ok) {
+    msg.textContent = `✅ 已还原自 ${r.restoredFrom}`;
+    document.getElementById('cfgBakPreviewWrap').style.display = 'none';
+    cfgBakSelected = null;
+    // 配置变了，把界面上所有依赖它的卡片都重读一遍。
+    refreshConfigBackups(); refreshWhitelist(); refreshDshModel(); refresh(); loadSecurity(); loadSocialForm(); loadV2Config(); loadSlangConfig();
+    alert('配置已还原并生效。\n\n若涉及 DSH 的模型/账号设置，建议重启桥接以确保完全生效。');
+  } else {
+    msg.textContent = '❌ ' + (r.error || '还原失败');
+  }
 });
 document.getElementById('clearWsBtn').addEventListener('click', async () => {
   if (!confirm('确定清空整个「QQ 聊天」工作区？\n将归档全部 QQ 会话、清除所有上下文映射、清空活动日志。\n此操作不可撤销。')) return;
@@ -4298,7 +4948,10 @@ function updateOverview(status, modeLabel) {
   document.getElementById('metricDshHint').textContent = status.dshReady ? '桥接状态已同步' : '请检查 DSH 是否运行';
   document.getElementById('metricMode').textContent = modeLabel.replace('模式', '');
   document.getElementById('metricRole').textContent = '角色 · ' + (status.role || '默认人格');
-  document.getElementById('accessSummary').textContent = '管理员 ' + (status.ownerQQ || '未设置') + ' · ' + (status.allowGroups || []).length + ' 个白名单群 · ' + (status.allowPrivate || []).length + ' 位白名单好友';
+  const privPart = status.allowAllPrivate === true
+    ? '私聊对所有人开放 ⚠️'
+    : (status.allowPrivate || []).length + ' 位白名单好友';
+  document.getElementById('accessSummary').textContent = '管理员 ' + (status.ownerQQ || '未设置') + ' · ' + (status.allowGroups || []).length + ' 个白名单群 · ' + privPart;
   document.getElementById('lastUpdated').textContent = '状态同步于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
   document.getElementById('connectionAlert').hidden = true;
   const silent = status.roleMode === 'silent';
@@ -4851,7 +5504,7 @@ document.getElementById('usageClear').addEventListener('click', async () => {
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
-refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
+refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent(); refreshConfigBackups();
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
 setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); refreshUsageChart(); refreshUsageRecent(); }, 3000);

@@ -299,7 +299,28 @@ export function makeFixtureState() {
     },
     roleInjectMax: 6000,
     dshEffort: 'max',
-    whitelist: { allow: { groups: [123456789, 100003], private: [100001] }, deny: { groups: [], private: [] }, ownerQQ: '100001' },
+    dshProvider: 'workbuddy',
+    dshModel: 'deepseek-v4.1-flash',
+    dshCatalog: [
+      { id: 'deepseek-official', name: 'DeepSeek 官方', models: [{ id: 'deepseek-flash', name: 'DeepSeek-V41-Flash', efforts: ['off', 'low', 'high', 'max'], defaultEffort: 'high' }] },
+      { id: 'workbuddy', name: 'WorkBuddy 国内版', models: [
+        { id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash · x0.11', efforts: ['off', 'low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+        { id: 'minimax-m3', name: 'MiniMax-M3 · x0.25', efforts: ['off', 'low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+      ] },
+    ],
+    whitelist: {
+      allow: { groups: [123456789, 100003], private: [100001] },
+      // 群白名单的**全量**条目（含被单独关掉的行）：控制台按行渲染读的是这一份。
+      // 基线里放一个 enabled:false 的行，才能覆盖「关掉的群」在界面上的呈现。
+      allowGroupsDetail: [
+        { id: '123456789', enabled: true },
+        { id: '100003', enabled: true },
+        { id: '100004', enabled: false },
+      ],
+      deny: { groups: [], private: [] },
+      ownerQQ: '100001',
+      allowAllPrivate: false,
+    },
     sessions: [
       { key: 'group:123456789', sessionId: 'demo-community-20260920', owner: false },
       { key: 'group:100003', sessionId: 'demo-development-20260920', owner: false },
@@ -434,14 +455,20 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             return json({ ok: true, backups: [{ file: `${preset}.agent.cordis.yml.fixture`, mtime: Date.parse(timestamp) }] });
           }
           case '/api/dsh/model': return json({
-            provider: 'deepseek-official',
-            model: 'deepseek-flash',
+            provider: state.dshProvider,
+            model: state.dshModel,
             reasoningEffort: state.dshEffort,
             options: ['low', 'high', 'max'],
             labels: { low: { name: 'Low', description: 'routine' }, high: { name: 'High', description: 'default balance' }, max: { name: 'Max', description: 'hardest tasks' } },
             default: 'max',
             providerDefault: 'high',
             catalogSource: 'dsh',
+            // 离线基线要同时覆盖「有目录」与「当前配置不在目录里」两种页面状态。
+            catalog: state.dshCatalog,
+            resolved: {
+              provider: state.dshCatalog.some((g) => g.id === state.dshProvider),
+              model: state.dshCatalog.some((g) => g.id === state.dshProvider && g.models.some((m) => m.id === state.dshModel)),
+            },
             globalSideEffect: true,
           });
           case '/api/whitelist': return json(state.whitelist);
@@ -523,8 +550,35 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             return json({ ok: true, restoredFrom: `${preset}.agent.cordis.yml.fixture`, requiresRestart: true });
           }
           case '/api/dsh/effort': state.dshEffort = body.reasoningEffort; return json({ ok: true, reasoningEffort: body.reasoningEffort });
+          case '/api/dsh/model': {
+            // 照真实实现的语义回放：目录里没有就 409 拒（页面据此显示错误），
+            // 有就落进 state，让随后的 GET 反映新模型。
+            const group = state.dshCatalog.find((g) => g.id === body.provider);
+            if (!group || !group.models.some((m) => m.id === body.model)) {
+              return json({ ok: false, error: `provider「${body.provider}」下没有模型「${body.model}」`, needConfirm: true }, 409);
+            }
+            state.dshProvider = body.provider;
+            state.dshModel = body.model;
+            if (body.reasoningEffort) state.dshEffort = body.reasoningEffort;
+            return json({ ok: true, provider: body.provider, model: body.model, reasoningEffort: state.dshEffort, appliedSessions: state.sessions.length, failedSessions: 0, globalSideEffect: true });
+          }
           case '/api/role-mode': state.roleMode = body.mode; return json({ ok: true });
-          case '/api/whitelist': state.whitelist = body; return json({ ok: true });
+          case '/api/whitelist': {
+            // 照真实实现回放：群条目落进 allowGroupsDetail（全量），allow.groups 只留启用的；
+            // 否则保存后页面回读会丢掉「被关掉的行」，离线基线就与真实行为不一致了。
+            const detail = Array.isArray(body.allow?.groups)
+              ? body.allow.groups.map((g) => (g && typeof g === 'object' ? { id: String(g.id), enabled: g.enabled !== false } : { id: String(g), enabled: true }))
+              : state.whitelist.allowGroupsDetail;
+            state.whitelist = {
+              ...state.whitelist,
+              allow: { private: body.allow?.private ?? state.whitelist.allow.private, groups: detail.filter((e) => e.enabled).map((e) => Number(e.id)) },
+              allowGroupsDetail: detail,
+              deny: body.deny ?? state.whitelist.deny,
+              ownerQQ: body.ownerQQ !== undefined ? body.ownerQQ : state.whitelist.ownerQQ,
+              allowAllPrivate: body.allowAllPrivate !== undefined ? body.allowAllPrivate === true : state.whitelist.allowAllPrivate,
+            };
+            return json({ ok: true, ...state.whitelist });
+          }
           case '/api/social': state.social = body; return json({ ok: true });
           case '/api/social/state': state.socialStates[body.key] = { phase: body.phase }; return json({ ok: true });
           case '/api/socialV2/config': state.v2 = body; return json({ ok: true });
